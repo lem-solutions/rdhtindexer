@@ -2,9 +2,10 @@
 name = "rdhtindexer"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0"
+authors = ["Christoph Lemannczick"]
 
 [dependencies]
-#serde_bencode = "0.2.4"
 bendy = {version = "0.6.1", features = ["serde"]}
 serde = "1.0.0"
 serde_derive = "1.0.0"

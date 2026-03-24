@@ -1,7 +1,5 @@
 use std::hash::Hash;
-use smol::net::{SocketAddrV4, SocketAddrV6, IpAddr, SocketAddr, Ipv4Addr, Ipv6Addr};
-use serde::{Serialize, Deserialize};
-use crate::krpc;
+use smol::net::*;
 use crate::krpc::Will;
 
 // TODO Es wäre ideomatischer wenn wir eigene Größe-Null-Datentypen definieren
@@ -146,15 +144,6 @@ impl Addr for SocketAddrV6 {
 		}
 	}
 	
-	/*
-	fn als_krpc(&self) -> Self::Krpc {
-		let mut krpc = krpc::KontaktInfoIpv6([0u8;18]);
-		(&mut krpc.0[0..16]).copy_from_slice(&self.ip().octets()[..]);
-		(&mut krpc.0[16..18]).copy_from_slice(&self.port().to_be_bytes()[..]);
-		krpc
-	}
-	*/
-	
 	fn aus_krpc_bytes(bytes: &[u8]) -> Option<Self> {
 		if bytes.len() != Self::KRPC_LEN { return None; }
 		let mut ip_bytes = [0u8;16];
@@ -170,13 +159,6 @@ impl Addr for SocketAddrV6 {
 		(&mut puffer[0..16]).copy_from_slice(&self.ip().octets()[..]);
 		(&mut puffer[16..18]).copy_from_slice(&self.port().to_be_bytes()[..]);
 	}
-	
-	/*
-	fn aus_krpc(krpc: &Self::Krpc) -> Self {
-		// unwrap: `Self::aus_krpc_bytes` überprüft nur die Länge der Slice,
-		// bei einem `Self::Krpc` muss die Länge bereits korrekt sein.
-		Self::aus_krpc_bytes(&krpc.0[..]).unwrap()
-	}*/
 	
 	#[cfg(feature = "ips_validieren")]
 	fn global_valide(&self) -> bool {

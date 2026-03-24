@@ -1,11 +1,7 @@
-use std::task::Waker;
-use std::cell::OnceCell;
-
 use bitvec::prelude::*;
 use super::*;
 use event_listener::{Event, EventListener};
 use oneshot::Sender as EinzelSender;
-use oneshot::Receiver as EinzelEmpfänger;
 
 #[derive(Debug)]
 pub enum Anfrageergebnis {
@@ -54,26 +50,6 @@ impl Anfragenpuffer {
 		
 		anf_opt
 	}
-	
-	/*
-	if nachricht.transaktionsnummer.len() != 2 {
-					log::debug!("Antwort mit ungültiger Transaktionsnummer: {:02X?} von {quell_addr}", nachricht.transaktionsnummer);
-					self.tempomat.melden_runter("fehlerhafte UDP Pakete", udp_len);
-					continue;
-				}
-					
-				let transaktionsnummer = u16::from_be_bytes(nachricht.transaktionsnummer.try_into().unwrap()) as usize;
-				let anfrage_info_opt = self.ausstehende_anfragen.borrow_mut().nehmen(transaktionsnummer);
-				if anfrage_info_opt.is_none() {
-					log::debug!("Antwort mit ungültiger Transaktionsnummer: {:02X?} von {quell_addr}", nachricht.transaktionsnummer);
-					self.tempomat.melden_runter("fehlerhafte UDP Pakete", udp_len);
-					continue;
-				}
-				let anfrage_info = anfrage_info_opt.unwrap();
-				self.tempomat.melden_runter(anfrage_info.aufgabenbereich, udp_len);
-				
-				self.externe_addr_prüfen(nachricht.externe_ip);
-	*/
 	
 	pub fn nehmen_bytes(&mut self, txid: &[u8]) -> Option<AusstehendeAnfrage> {
 		if txid.len() != 2 {

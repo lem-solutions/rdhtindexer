@@ -1,9 +1,8 @@
 use std::sync::Arc;
 use std::sync::RwLock;
 use bendy::encoding::ToBencode;
-use oneshot::channel;
 use smol::Timer;
-use smol::net::{UdpSocket, IpAddr, SocketAddr};
+use smol::net::{UdpSocket, SocketAddr};
 use smol::io::Error as IoError;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -32,7 +31,9 @@ const VERSIONSCODE : Option<&'static [u8]> = None;
 // https://bittorrent.org/beps/bep_0032.html
 const MAX_KRPC_LEN : usize = 1024;
 
+// TODO
 const ANZ_MELDUNGEN_IPWECHSEL : usize = 10;
+
 const BEP51_INTERVAL_SEK : u16 = 300;
 
 pub struct InfoHashMitKnoten {
@@ -86,7 +87,6 @@ pub struct DhtKnoten<A: Addr> {
 	angebliche_externe_addresse: RwLock<Option<A>>,
 	quellen_für_externe_addresse: RwLock<HashSet<A>>,
 	
-	max_ausstehende_anfragen: usize,
 	anfragen_zeitgrenze: Duration,
 	gestartet: AtomicBool,
 }
@@ -118,7 +118,6 @@ impl<A: Addr> DhtKnoten<A>
 			tempomat,
 			kanäle,
 			ausstehende_anfragen: RwLock::new(Anfragenpuffer::neu(max_ausstehende_anfragen)),
-			max_ausstehende_anfragen,
 			anfragen_zeitgrenze,
 			angebliche_externe_addresse: RwLock::new(None),
 			quellen_für_externe_addresse: RwLock::new(HashSet::new()),
@@ -326,12 +325,6 @@ impl<A: Addr> DhtKnoten<A>
 		if let Err(e) = aw_senden_res {
 			log::warn!("Fehler beim Abschicken einer Antwort auf eine Anfrage: {e}");
 		}
-		
-		/*
-		if aw_nachricht.is_ok() {
-			self.routing_tabelle.write().unwrap().anfrage_erhalten(nachricht.anfrage_argumente.as_ref().unwrap().id, quell_addr);
-		}
-		*/
 	}
 	
 	fn anfrage_bearbeiten_sample_infohashes(
@@ -360,29 +353,6 @@ impl<A: Addr> DhtKnoten<A>
 	}
 	
 	fn anfrage_bearbeiten_announce_peer(&self, implizierter_port: bool, info_hash: U160, port: u16, token: Vec<u8>, quell_addr: &A, req_id: U160) -> Result<KrpcAntwort, KrpcFehler> {
-		/*
-		let args = nachricht.anfrage_argumente.as_ref().unwrap();
-		match args.token {
-			Some(t) if token_überprüfen(args.id, quell_addr, t) => {}
-			Some(_) => return Err(KrpcFehler { fehlercode: KRPC_PROTOKOLL_FEHLER, fehlermeldung: b"fehlerhaftes Token".to_vec() }),
-			None => return Err(KrpcFehler { fehlercode: KRPC_PROTOKOLL_FEHLER, fehlermeldung: b"Token erforderlich".to_vec() }),
-		}
-		
-		let implizierter_port = args.impliziter_port.unwrap_or(false);
-		*/
-		
-		/*
-		let peer_addr = if implizierter_port {
-			quell_addr.clone()
-		} else if let Some(p) = port {
-			let mut a = quell_addr.clone();
-			a.port_ändern(p);
-			a
-		} else {
-			return Err(KrpcFehler { fehlercode: KrpcFehlercode::ProtokollFehler, fehlermeldung: "Port fehlt".to_owned() });
-		};
-		*/
-		
 		if !token_überprüfen(req_id, quell_addr, token.as_slice()) {
 			return Err(KrpcFehler { fehlercode: KrpcFehlercode::ProtokollFehler, fehlermeldung: "fehlerhaftes Token".to_owned() });
 		}
@@ -526,8 +496,6 @@ impl<A: Addr> DhtKnoten<A>
 		Ok(anz_geschrieben)
 	}
 	
-	
-	// Antwort{id: U160, ext_ip: Option<A>, aw: KrpcAntwort},
 	async fn antwort_senden<'a>(
 		&self,
 		ziel: &A,

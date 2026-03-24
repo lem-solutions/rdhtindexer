@@ -1,7 +1,7 @@
 use std::ops::BitXor;
 use std::fmt;
 use serde_derive::*;
-use smol::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use smol::net::IpAddr;
 use rand::random;
 use crate::addr_generisch::Addr;
 

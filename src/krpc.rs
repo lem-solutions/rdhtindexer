@@ -8,6 +8,7 @@ use bendy::decoding::*;
 use bendy::encoding::*;
 use bendy::decoding::Error as DeErr;
 use bendy::encoding::Error as EnErr;
+use std::mem::forget;
 
 /// KRPC Datenstrukturen mit (De)Serialisierungsmethoden.
 /// Eine `serde`-Basierte implementierung hat sich aufgrund einiger Eigenheiten

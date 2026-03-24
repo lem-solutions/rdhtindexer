@@ -2,9 +2,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Fehler {
-	// #[error("Bencode Fehler(Serde): {0}")]
-	// BencodeSerdeFehler(#[from] bendy::serde::Error),
-	
 	#[error("Bencode Fehler(Dekodieren): {0}")]
 	BencodeDeFehler(#[from] bendy::decoding::Error),
 
@@ -22,7 +19,4 @@ pub enum Fehler {
 	
 	#[error("Wir haben versucht ein zu großes KRPC-Paket zu senden ({0})")]
 	GesendeteNachrichtZuLang(usize),
-	
-	#[error("Der Scanner hat keine Ziele mehr und konnte keine neuen Finden.")]
-	ScannerTod,
 }

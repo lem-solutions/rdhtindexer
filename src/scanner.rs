@@ -1,9 +1,10 @@
-use std::{collections::{HashSet, VecDeque}, rc::Rc, sync::Arc, time::{Duration, Instant, SystemTime}};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 use std::sync::Mutex;
 
 use smol::{Timer, channel::*, stream::Stream};
 use smol::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
-use smol::LocalExecutor;
 
 use crate::{Fehler, datentypen::{KnotenInfo, U160}, dht_knoten::{DhtKnoten, InfoHashMitKnoten}, krpc::{KrpcAnfrage, KrpcAntwort, KrpcFehler, KrpcFehlercode}};
 use crate::dht_knoten::Anfrageergebnis;
@@ -69,7 +70,7 @@ impl<A: Addr> Scanner<A> {
 		rx_knoten: Receiver<(U160, SocketAddr)>,
 	) -> Self {
 		let (info_hash_tx, info_hash_rx) = unbounded();
-		let (knoten_tx, knoten_rx) = unbounded();
+		let (knoten_tx, knoten_rx) = bounded(KNOTENPUFFERGRÖßE);
 		Scanner {
 			knoten_tx,
 			knoten_rx,
@@ -81,13 +82,9 @@ impl<A: Addr> Scanner<A> {
 		}
 	}
 	
-	
 	pub fn scannen(self: Arc<Self>) -> impl Stream<Item=InfoHashMitKnoten> {
 		let rx = self.info_hash_rx.clone();
-		
-		
 		smol::spawn(self.scannen_intern()).detach();
-		
 		rx
 	}
 	
@@ -118,26 +115,6 @@ impl<A: Addr> Scanner<A> {
 			}
 		}
 	}
-	/*
-	fn antwort_verarbeiten(&mut self, aw_res: Anfrageergebnis) {
-		// TODO bei unbekannter Methode find_nodes benutzen
-		let aw = if let Anfrageergebnis::Ok(a) = aw_res { a } else {
-			return;
-		};
-		
-		match aw {
-			KrpcAntwort::SampleInfohashes { knoten_v4, knoten_v6, info_hashes, .. } => {
-				self.antwort_verarbeiten_neue_knoten(knoten_v4, knoten_v6);
-				
-				// TODO
-			},
-			KrpcAntwort::FindNode { knoten_v4, knoten_v6 } => {
-				self.antwort_verarbeiten_neue_knoten(knoten_v4, knoten_v6);
-			},
-			_ => {}
-		}
-	}
-	*/
 	
 	/// Versucht die entsprechenden Knoten in unsere Liste einzufügen und gibt
 	/// und gibt zurück ob mindestens ein Knoten dabei war den wir nicht schon
@@ -276,37 +253,6 @@ impl<A: Addr> Scanner<A> {
 		Ok(f.await.unwrap())
 	}
 	
-	/*
-	async fn suchschritt(&mut self) -> Result<(), Fehler> {
-		// unwrap: es wurde voher sichergestellt, dass mindestens ein
-		//         Knoten  verfügbar ist.
-		let anf_an = self.zielpuffer.lock().unwrap().pop_front().unwrap();
-		
-		let anf = KrpcAnfrage::SampleInfohashes {
-			ziel: anf_an.0.invertieren(),
-			will: None,
-		};
-		
-		let f = self.dht_knoten.anfrage_senden(
-			KnotenInfo {
-				id: anf_an.0,
-				addr: A::aus_socket_addr(anf_an.1).unwrap(),
-				
-			},
-			anf,
-			"Scanner",
-			false).await?;
-			
-		
-		let tx2 = self.info_hash_tx.clone();
-		smol::spawn(async move {
-			tx2.send(f.recv().unwrap()).await.unwrap()
-		}).detach();
-		
-		Ok(())
-	}
-	*/
-	
 	async fn zufallssuche(self: Arc<Self>) {
 		let (info_tx , info_rx) : (Sender<KnotenInfo<A>>, _) = smol::channel::unbounded();
 		let self2 = self.clone();
@@ -320,11 +266,6 @@ impl<A: Addr> Scanner<A> {
 		smol::spawn(async move {self3
 			.dht_knoten
 			.knoten_iterativ_suchen(U160::zufällig(), info_tx).await}).detach();
-		
-		/*self.zielpuffer
-			.lock()
-			.unwrap()
-			.extend(neue_knoten.into_iter().map(|k| (k.id, k.addr.into())));*/
 	}
 	
 	/// Fügt den gegebenen Knoten ein und gibt zurück ob dieser bereits 
