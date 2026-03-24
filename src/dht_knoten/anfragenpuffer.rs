@@ -30,11 +30,15 @@ pub struct Anfragenpuffer {
 }
 impl Anfragenpuffer {
 	pub fn neu(max_anfragen: usize) -> Self {
-		Anfragenpuffer {
+		let mut p = Anfragenpuffer {
 			index: bitbox![0;max_anfragen],
 			anfragen: Vec::with_capacity(max_anfragen),
 			anfrage_frei: Event::new(),
+		};
+		for _ in 0..max_anfragen {
+			p.anfragen.push(None);
 		}
+		p
 	}
 	
 	/// Entfernt die Anfrage mit der Nummer `idx` und gibt diese zurück falls sie existiert.
