@@ -69,7 +69,7 @@ fn main() {
 	);
 	
 	knoten.starten(&[
-		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(67,215,246,10), 6881)
+		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(212,129,33,59), 6881)
 	]);
 }
 
@@ -80,7 +80,7 @@ async fn ignorieren<T>(rx: smol::channel::Receiver<T>) {
 	}
 }
 
- /*
+/*
 fn _rx_print() {
 	let s = UdpSocket::bind("[::]:53722").unwrap();
 	let mut buf = [0u8;4096];

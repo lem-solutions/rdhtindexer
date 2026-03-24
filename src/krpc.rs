@@ -248,6 +248,20 @@ pub enum AnfrageMethode {
 	SampleInfohashes,
 	Unbekannt(Vec<u8>),
 }
+impl std::fmt::Display for AnfrageMethode {
+	fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		match self {
+			AnfrageMethode::Ping => write!(fmt, "Ping"),
+			AnfrageMethode::FindNode => write!(fmt, "FindNode"),
+			AnfrageMethode::GetPeers => write!(fmt, "GetPeers"),
+			AnfrageMethode::AnnouncePeer => write!(fmt, "AnnouncePeer"),
+			AnfrageMethode::SampleInfohashes => write!(fmt, "SampleInfohashes"),
+			AnfrageMethode::Unbekannt(v) => 
+				write!(fmt, "{}", String::from_utf8_lossy(v)),
+		}
+	}
+}
+
 impl ToBencode for AnfrageMethode {
 	const MAX_DEPTH: usize = 0;
 	
@@ -440,6 +454,16 @@ pub enum KrpcAntwort {
 	}
 }
 impl KrpcAntwort {
+	pub fn methode(&self) -> AnfrageMethode {
+		match self {
+			KrpcAntwort::Ping => AnfrageMethode::Ping,
+			KrpcAntwort::FindNode { .. } => AnfrageMethode::FindNode,
+			KrpcAntwort::GetPeers { .. } => AnfrageMethode::GetPeers,
+			KrpcAntwort::AnnouncePeer => AnfrageMethode::AnnouncePeer,
+			KrpcAntwort::SampleInfohashes { .. } => AnfrageMethode::SampleInfohashes,
+		}
+	}
+	
 	fn argumente_ausgeben(&self, en: &mut UnsortedDictEncoder) -> Result<(), EnErr> {
 		match self {
 			KrpcAntwort::Ping => {},

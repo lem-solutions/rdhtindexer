@@ -207,6 +207,7 @@ impl<A: Addr> DhtKnoten<A> {
 			};
 			
 			if matches!(nachricht.inhalt, KrpcInhalt::Anfrage{..}) {
+				log::trace!("RX REQ {quell_addr}");
 				self.anfrage_verarbeiten(nachricht, udp_len, quell_addr).await;
 			} else {
 				let anfrage_info = if let Some(i) = self.ausstehende_anfragen.borrow_mut().nehmen_bytes(&nachricht.transaktionsnummer) {
@@ -220,11 +221,15 @@ impl<A: Addr> DhtKnoten<A> {
 				
 				let erg = match nachricht.inhalt {
 					KrpcInhalt::Antwort { id, ext_ip, aw } => {
+						let methode = aw.methode();
+						log::trace!("RX AW  {methode} {quell_addr} ");
 						self.routing_tabelle.borrow_mut().antwort_erhalten(id, quell_addr);
 						self.externe_addr_prüfen(ext_ip);
 						Anfrageergebnis::Ok(aw)
 					},
 					KrpcInhalt::Fehler(f) => {
+						let txt = &f.fehlermeldung;
+						log::trace!("RX ERR {quell_addr} {txt}");
 						if anfrage_info.bei_fehler_knoten_entfernen { self.routing_tabelle.borrow_mut().fehlschlag(anfrage_info.knoten_id); }
 						Anfrageergebnis::Fehler(f)
 					},
@@ -529,6 +534,8 @@ impl<A: Addr> DhtKnoten<A> {
 		aufgabenbereich: &'static str,
 		bei_fehler_knoten_entfernen: bool,
 	) -> Result<oneshot::Receiver<Anfrageergebnis>, Fehler> {
+		let anf_methode = anf.methode();
+		
 		let mut austehende_anfragen = self.ausstehende_anfragen.borrow_mut();
 		
 		let (aw_sender, aw_empf) = oneshot::channel();
@@ -563,6 +570,9 @@ impl<A: Addr> DhtKnoten<A> {
 			inhalt: KrpcInhalt::Anfrage { id: self.routing_tabelle.borrow().eigene_id, anf}
 		};
 		
+		
+		let ziel_addr = &ziel.addr;
+		log::trace!("TX REQ {anf_methode} {ziel_addr}");
 		self.nachricht_abschicken(&n, &ziel.addr, aufgabenbereich).await?;
 		Ok(aw_empf)
 	}
