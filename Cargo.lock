@@ -579,7 +579,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdhtsucher"
+name = "rdhtindexer"
 version = "0.1.0"
 dependencies = [
  "bendy",
