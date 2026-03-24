@@ -1,5 +1,5 @@
-use bitvec::prelude::*;
 use super::*;
+use bitvec::prelude::*;
 use event_listener::{Event, EventListener};
 use oneshot::Sender as EinzelSender;
 
@@ -37,20 +37,22 @@ impl Anfragenpuffer {
 		}
 		p
 	}
-	
+
 	/// Entfernt die Anfrage mit der Nummer `idx` und gibt diese zurück falls sie existiert.
 	pub fn nehmen(&mut self, idx: usize) -> Option<AusstehendeAnfrage> {
-		if idx > self.index.len() { return None; }
+		if idx > self.index.len() {
+			return None;
+		}
 		self.index.set(idx, false);
-		
+
 		let anf_opt = self.anfragen[idx].take();
 		if anf_opt.is_some() {
 			self.anfrage_frei.notify(1);
 		}
-		
+
 		anf_opt
 	}
-	
+
 	pub fn nehmen_bytes(&mut self, txid: &[u8]) -> Option<AusstehendeAnfrage> {
 		if txid.len() != 2 {
 			log::debug!("Antwort mit ungültiger Transaktionsnummer: {:02X?}", txid);
@@ -59,16 +61,24 @@ impl Anfragenpuffer {
 		let idx = u16::from_be_bytes(txid.try_into().unwrap()) as usize;
 		self.nehmen(idx)
 	}
-	
+
 	pub fn methode_für_txid(&self, idx: usize) -> Option<AnfrageMethode> {
-		self.anfragen.get(idx).map(|opt| opt.as_ref()).flatten().map(|anf| anf.methode.clone())
+		self
+			.anfragen
+			.get(idx)
+			.map(|opt| opt.as_ref())
+			.flatten()
+			.map(|anf| anf.methode.clone())
 	}
-	
+
 	/// Fügt eine Neue Anfrage in den Puffer ein und gibt die zugewiesene ID zurück.
 	/// Solle die maximale Anzahl an einträgen im Puffer erreicht sein wird die Anfrage
 	/// und ein `EventListener` als `Err(_)` zurückgegeben. Wenn der `EventListener`
 	/// Ein Ereignis empfängt sollte das Einfügen der Anfrage erneut versucht werden.
-	pub fn einfügen(&mut self, anfrage: AusstehendeAnfrage) -> Result<usize, (AusstehendeAnfrage, EventListener)> {
+	pub fn einfügen(
+		&mut self,
+		anfrage: AusstehendeAnfrage,
+	) -> Result<usize, (AusstehendeAnfrage, EventListener)> {
 		if let Some(idx) = self.index.first_zero() {
 			self.index.set(idx, true);
 			assert!(self.anfragen[idx].replace(anfrage).is_none());
@@ -77,15 +87,17 @@ impl Anfragenpuffer {
 			Err((anfrage, self.anfrage_frei.listen()))
 		}
 	}
-	
+
 	/// Gibt einen Iterator zurück, der für jede ausstehende Anfrage überprüft
 	/// ob die Zeitgrenze abgelaufen ist und die KnotenIds der Zielknoten der
 	/// abgelaufenen Anfragen aus.
-	/// 
+	///
 	/// Nachdem der Iterator durchlaufen wurde, kann er die baldigste Zeitgrende
 	/// der noch nicht abgelaufenen Anfragen ausgeben.
-	/// 
-	pub fn zeitgrenzen_überprüfen<'a>(&'a mut self) -> ZeitüberschreitungsIter<'a> {
+	///
+	pub fn zeitgrenzen_überprüfen<'a>(
+		&'a mut self,
+	) -> ZeitüberschreitungsIter<'a> {
 		ZeitüberschreitungsIter {
 			anfragen_iter: self.anfragen.iter_mut().enumerate(),
 			index: &mut self.index,
@@ -96,7 +108,8 @@ impl Anfragenpuffer {
 }
 
 pub struct ZeitüberschreitungsIter<'a> {
-	anfragen_iter: std::iter::Enumerate<std::slice::IterMut<'a, Option<AusstehendeAnfrage>>>,
+	anfragen_iter:
+		std::iter::Enumerate<std::slice::IterMut<'a, Option<AusstehendeAnfrage>>>,
 	index: &'a mut BitBox,
 	anfrage_frei: &'a Event,
 	baldigste_zeitgrenze: Option<Instant>,
@@ -104,9 +117,9 @@ pub struct ZeitüberschreitungsIter<'a> {
 impl<'a> ZeitüberschreitungsIter<'a> {
 	/// Gibt die baldigste (nicht abgelaufene) Zeitgrenze zurück. Oder `None`
 	/// falls es keine gab.
-	/// 
+	///
 	/// Panict wenn der Iterator nicht vollständig durchlaufen wurde.
-	/// 
+	///
 	/// Hinweis: Da zwischen dem Zeitpunkt der Überprüfung und dem return dieser
 	/// Funktion Zeit vergangen sein kann ist es nicht garrantiert das der
 	/// zurückgebebene Zeitpunkt in der Zukunft liegt.
@@ -117,13 +130,13 @@ impl<'a> ZeitüberschreitungsIter<'a> {
 }
 impl<'a> Iterator for ZeitüberschreitungsIter<'a> {
 	type Item = U160;
-	
+
 	fn next(&mut self) -> Option<Self::Item> {
 		while let Some((idx, eintrag)) = self.anfragen_iter.next() {
 			if let Some(anfrage_ref) = eintrag.as_ref() {
 				if anfrage_ref.zeitgrenze < Instant::now() {
 					let anfrage = eintrag.take().unwrap();
-					self.index.set(idx,false);
+					self.index.set(idx, false);
 					#[allow(unused_must_use)]
 					anfrage.sender.send(Anfrageergebnis::Zeitüberschreitung);
 					self.anfrage_frei.notify(1);
@@ -141,9 +154,8 @@ impl<'a> Iterator for ZeitüberschreitungsIter<'a> {
 		}
 		None
 	}
-	
+
 	fn size_hint(&self) -> (usize, Option<usize>) {
 		self.anfragen_iter.size_hint()
 	}
 }
-
