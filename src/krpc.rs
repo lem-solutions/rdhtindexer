@@ -78,7 +78,9 @@ impl<A: Addr> ToBencode for KrpcNachricht<A> {
 	fn encode(&self, en: SingleItemEncoder) -> Result<(), EnErr> {
 		en.emit_unsorted_dict(|e_haupt| {
 			e_haupt.emit_pair_with(b"t", |e| e.emit_bytes(self.transaktionsnummer.as_slice()))?;
-			e_haupt.emit_pair_with(b"v", |e| e.emit_bytes(self.transaktionsnummer.as_slice()))?;
+			if let Some(v) = self.versionscode.as_ref() {
+				e_haupt.emit_pair_with(b"v", |e| e.emit_bytes(v.as_slice()))?;
+			}
 			match self.inhalt {
 				KrpcInhalt::Anfrage { id, ref anf } => {
 					e_haupt.emit_pair(b"y", "q")?;
