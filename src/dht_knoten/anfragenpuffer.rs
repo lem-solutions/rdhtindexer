@@ -24,7 +24,6 @@ pub struct AusstehendeAnfrage {
 }
 
 pub struct Anfragenpuffer {
-	max_anfragen: usize,
 	index: BitBox,
 	anfragen: Vec<Option<AusstehendeAnfrage>>,
 	anfrage_frei: Event,
@@ -32,7 +31,6 @@ pub struct Anfragenpuffer {
 impl Anfragenpuffer {
 	pub fn neu(max_anfragen: usize) -> Self {
 		Anfragenpuffer {
-			max_anfragen,
 			index: bitbox![0;max_anfragen],
 			anfragen: Vec::with_capacity(max_anfragen),
 			anfrage_frei: Event::new(),
