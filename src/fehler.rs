@@ -22,4 +22,7 @@ pub enum Fehler {
 	
 	#[error("Wir haben versucht ein zu großes KRPC-Paket zu senden ({0})")]
 	GesendeteNachrichtZuLang(usize),
+	
+	#[error("Der Scanner hat keine Ziele mehr und konnte keine neuen Finden.")]
+	ScannerTod,
 }

@@ -10,7 +10,7 @@ use crate::krpc::Will;
 /// Wir benutzen diesen Trait um den Code für IPv4 und IPv6 zu generalisieren.
 /// Da mehrere Datentypen involviert sind ist es eigentlich egal ob wir den
 /// Trait für SocketAddrV* oder für krpc::KontaktInfoIpv* implementieren.
-pub trait Addr : smol::net::AsyncToSocketAddrs + Into<SocketAddr> + std::fmt::Display + Clone + PartialEq + Hash {
+pub trait Addr : smol::net::AsyncToSocketAddrs + Into<SocketAddr> + std::fmt::Display + Clone + PartialEq + Hash + Send {
 	// type Krpc : Serialize + for<'de> Deserialize<'de> + PartialEq + Clone;
 	const KRPC_LEN : usize;
 	const IST_IPV4 : bool;

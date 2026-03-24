@@ -14,6 +14,7 @@ pub struct KnotenInfo<A: Addr> {
 	pub addr: A
 }
 
+
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Serialize, Deserialize, Hash)]
 pub struct U160(pub [u8;20]);
 impl BitXor for U160 {
@@ -76,6 +77,33 @@ impl U160 {
 	pub fn zufällig() -> Self {
 		let bytes : [u8;20] = random();
 		U160(bytes)
+	}
+	
+	/// Die ersten n bits werden beibehalten, aller bits danach werden
+	/// invertiert.
+	#[must_use]
+	pub fn n_bits_beibehalten(&self, n: usize) -> U160 {
+		let mut erg = self.clone();
+		assert!(n < 20*8);
+		if n == 20*8 { return erg; }
+		let start_byte = n / 8;
+		let rest_bits = n % 8;
+		erg.0[start_byte] ^= 0b1111_1111 >> rest_bits;
+		for byte in &mut erg.0[start_byte..] {
+			*byte ^= 0b1111_1111;
+		}
+		
+		erg
+	}
+	
+	#[must_use]
+	pub fn invertieren(&self) -> U160 {
+		let mut erg = self.clone();
+		for byte in &mut erg.0 {
+			*byte ^= 0b1111_1111;
+		}
+		
+		erg
 	}
 }
 

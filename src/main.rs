@@ -10,12 +10,14 @@ mod tempomat;
 mod dht_knoten;
 mod fehler;
 mod addr_generisch;
+mod scanner;
 
 pub(crate) use fehler::*;
 
 use dht_knoten::DhtKnoten;
 
 use crate::dht_knoten::KnotenKanäle;
+use crate::scanner::Scanner;
 
 
 /*
@@ -45,7 +47,7 @@ fn main() {
 		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(0,0,0,0), 53722),
 		tempomat,
 		knoten_kanäle,
-		1024,
+		1,
 		Duration::from_secs(30),
 		1024,
 		Duration::from_hours(6),
@@ -58,7 +60,7 @@ fn main() {
 		|| {
 			smol::block_on(async {
 				let smol_rt = smol::LocalExecutor::new();
-				smol_rt.spawn(ignorieren(knoten_empfänger.knoten)).detach();
+				// smol_rt.spawn(ignorieren(knoten_empfänger.knoten)).detach();
 				smol_rt.spawn(ignorieren(knoten_empfänger.info_hash_mit_peer)).detach();
 				smol_rt.spawn(ignorieren(knoten_empfänger.info_hash_mit_knoten)).detach();
 				loop {
@@ -68,9 +70,43 @@ fn main() {
 		}
 	);
 	
-	knoten.starten(&[
+	//let async_exec = smol::LocalExecutor::new();
+	
+	let bootstrap = vec![
 		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(212,129,33,59), 6881)
-	]);
+	];
+	let async_exec = knoten.starten(bootstrap);
+	// let scanner = Scanner::neu(knoten, knoten_empfänger.knoten);
+	// let (infos, async_exec) = scanner.scannen(async_exec);
+	
+	
+	
+	/*
+	loop {
+		smol::future::block_on(async_exec.tick());
+	}
+	*/
+	/*
+	
+	
+	async_exec.spawn(async {
+		let mut infos = std::pin::pin!(scanner.scannen(&async_exec));
+		while let Some(info) = infos.next().await {
+			let info_hash = info.info_hash;
+			let addr = info.addr;
+			log::info!("INFOHASH {info_hash} {addr}");
+		}
+	});
+	*/
+	
+	/*
+	loop {
+		smol::future::block_on(async_exec.tick());
+	}
+	*/
+	
+	
+	
 }
 
 async fn ignorieren<T>(rx: smol::channel::Receiver<T>) {

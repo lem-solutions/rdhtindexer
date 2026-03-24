@@ -630,6 +630,7 @@ impl FromBencode for KrpcFehler {
 
 
 // TODO dreifache Doplikation der Bedeutung der Fehlercodes vermeiden.
+#[derive(PartialEq)]
 #[repr(u16)]
 pub enum KrpcFehlercode {
 	Allgemein = 201,

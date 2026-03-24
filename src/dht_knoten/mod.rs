@@ -21,7 +21,7 @@ mod anfragenpuffer;
 mod token;
 use routing_tabelle::*;
 use anfragenpuffer::*;
-use anfragenpuffer::Anfrageergebnis;
+pub use anfragenpuffer::Anfrageergebnis;
 use peer_tabelle::PeerTabelle;
 use token::{token_generieren, token_überprüfen};
 
@@ -42,7 +42,7 @@ pub struct InfoHashMitKnoten {
 
 #[derive(Clone)]
 pub struct KnotenKanäle {
-	pub knoten: Sender<(U160, IpAddr)>,
+	pub knoten: Sender<(U160, SocketAddr)>,
 	pub info_hash_mit_peer: Sender<(U160, SocketAddr)>,
 	pub info_hash_mit_knoten: Sender<InfoHashMitKnoten>,
 }
@@ -68,7 +68,7 @@ impl KnotenKanäle {
 }
 
 pub struct KnotenEmpfänger {
-	pub knoten: Receiver<(U160, IpAddr)>,
+	pub knoten: Receiver<(U160, SocketAddr)>,
 	pub info_hash_mit_peer: Receiver<(U160, SocketAddr)>,
 	pub info_hash_mit_knoten: Receiver<InfoHashMitKnoten>,
 }
@@ -125,30 +125,35 @@ impl<A: Addr> DhtKnoten<A> {
 		})
 	}
 	
-	pub fn starten<'a, I: IntoIterator<Item=&'a A>> (&self, bootstrap_knoten: I)
+	pub fn starten(self, bootstrap_knoten: Vec<A>)
 	where A: 'static
 	{
-		let war_gestartet = self.gestartet.swap(true, std::sync::atomic::Ordering::Relaxed);
-		assert!(!war_gestartet);
+		let bootstrap_knoten_iter = bootstrap_knoten.into_iter();
+		std::thread::spawn(move || {
+			let war_gestartet = self.gestartet.swap(true, std::sync::atomic::Ordering::Relaxed);
+			assert!(!war_gestartet);
+			
+			let async_exec = smol::LocalExecutor::new();
+			
+			
+			async_exec.spawn(self.nachrichten_empfangen()).detach();
+			async_exec.spawn(self.routing_tabelle_warten()).detach();
+			
+			for knoten_addr in bootstrap_knoten_iter {
+				async_exec.spawn(self.anfrage_senden(
+					KnotenInfo { id: self.routing_tabelle.borrow().eigene_id, addr:  knoten_addr.clone()},
+					KrpcAnfrage::Ping,
+					"DhtKnoten::starten",
+					true
+				)).detach();
+			}
+			
+			loop {
+				smol::future::block_on(async_exec.tick());
+			}
+		});
 		
-		let async_exec = smol::LocalExecutor::new();
 		
-		
-		async_exec.spawn(self.nachrichten_empfangen()).detach();
-		async_exec.spawn(self.routing_tabelle_warten()).detach();
-		
-		for knoten_addr in bootstrap_knoten {
-			async_exec.spawn(self.anfrage_senden(
-				KnotenInfo { id: self.routing_tabelle.borrow().eigene_id, addr:  knoten_addr.clone()},
-				KrpcAnfrage::Ping,
-				"DhtKnoten::starten",
-				true
-			)).detach();
-		}
-		
-		loop {
-			smol::future::block_on(async_exec.tick());
-		}
 	}
 	
 	async fn routing_tabelle_warten(&self) -> Fehler {
@@ -225,6 +230,7 @@ impl<A: Addr> DhtKnoten<A> {
 						log::trace!("RX AW  {methode} {quell_addr} ");
 						self.routing_tabelle.borrow_mut().antwort_erhalten(id, quell_addr);
 						self.externe_addr_prüfen(ext_ip);
+						
 						Anfrageergebnis::Ok(aw)
 					},
 					KrpcInhalt::Fehler(f) => {
@@ -260,6 +266,12 @@ impl<A: Addr> DhtKnoten<A> {
 		if !quell_addr.global_valide() {
 			log::debug!("Paket von ungültiger Addresse: {quell_addr}");
 			return;
+		}
+		
+		if self.kanäle.knoten.try_send((req_id, quell_addr.clone().into()))
+			.is_err()
+		{
+			log::warn!("kanäle.knoten voll!");
 		}
 		
 		let aw = match anf {
@@ -367,12 +379,24 @@ impl<A: Addr> DhtKnoten<A> {
 			a
 		};
 		
+		if self.kanäle.info_hash_mit_peer.try_send(
+			(info_hash, peer_addr.clone().into())).is_err()
+		{
+			log::warn!("kanäle.kanäle.info_hash_mit_peer voll!");
+		}
+		
 		self.peer_tabelle.borrow_mut().peer_einfügen(info_hash, peer_addr);
 		
 		Ok(KrpcAntwort::AnnouncePeer)
 	}
 	
 	fn anfrage_bearbeiten_get_peers<'a>(&self, info_hash: U160, will: Will, quell_addr: &A, req_id: U160) -> Result<KrpcAntwort, KrpcFehler> {
+		if self.kanäle.info_hash_mit_knoten.try_send(
+			InfoHashMitKnoten { info_hash, knoten_id: req_id, addr: quell_addr.clone().into()}).is_err()
+		{
+			log::warn!("kanäle.info_hash_mit_knoten voll!");
+		}
+		
 		let mut peer_tabelle = self.peer_tabelle.borrow_mut();
 		let peer_iter = peer_tabelle.peers_für_hash(&info_hash);
 		let token = token_generieren(req_id, quell_addr).to_vec();
@@ -492,6 +516,8 @@ impl<A: Addr> DhtKnoten<A> {
 		aw: KrpcAntwort,
 		aufgabenbereich: &'static str,
 	) -> Result<(), Fehler> {
+		let m = &aw.methode();
+		log::trace!("TX AW  {m} {ziel}");
 		let n = KrpcNachricht {
 			transaktionsnummer: tx_nummer.to_vec(),
 			versionscode: VERSIONSCODE.map(|v| v.to_vec()),
@@ -513,6 +539,8 @@ impl<A: Addr> DhtKnoten<A> {
 		krpc_fehler: KrpcFehler,
 		aufgabenbereich: &'static str,
 	) -> Result<(), Fehler> {
+		let txt = &krpc_fehler.fehlermeldung;
+		log::trace!("TX ERR {ziel} {txt}");
 		let n = KrpcNachricht {
 			transaktionsnummer: tx_nummer.to_vec(),
 			versionscode: VERSIONSCODE.map(|v| v.to_vec()),
@@ -527,7 +555,7 @@ impl<A: Addr> DhtKnoten<A> {
 		Ok(())
 	}
 	
-	async fn anfrage_senden<'a>(
+	pub async fn anfrage_senden<'a>(
 		&self,
 		ziel: KnotenInfo<A>,
 		anf: KrpcAnfrage,
@@ -575,5 +603,91 @@ impl<A: Addr> DhtKnoten<A> {
 		log::trace!("TX REQ {anf_methode} {ziel_addr}");
 		self.nachricht_abschicken(&n, &ziel.addr, aufgabenbereich).await?;
 		Ok(aw_empf)
+	}
+	
+	
+	// TODO: Den *korrekten* Algorithmus implementieren.
+	// TODO: Anfällig für DoS durch überfüllung mit Fake-Knoten die
+	//       immer näher am Ziel sind.
+	/// Versucht einen Knoten mit ID `ziel` zu finden, bzw. Knoten
+	/// möglichst nah zu dieser ID zu finden. Gibt alle genfundenen
+	/// Knoten in sortierten Liste zurück(am nahegelegenster Knoten 
+	/// zuerst)
+	pub async fn knoten_iterativ_suchen(
+		&self,
+		ziel: U160,
+	) -> Vec<KnotenInfo<A>> {
+		let rt_b = self.routing_tabelle.borrow();
+		let mut knoten_minivec = noalloc_vec_rs::vec::Vec::new();
+		rt_b.nächste_k_knoten(ziel, &mut knoten_minivec);
+		let mut knoten = Vec::with_capacity(knoten_minivec.len());
+		for (id, addr) in knoten_minivec {
+			knoten.push(KnotenInfo {
+				id, addr: addr.clone()
+			});
+		}
+		knoten.sort_by_key(|k| k.id ^ ziel);
+		
+		let mut beste_entfernung = U160([255;20]);
+		
+		while beste_entfernung > knoten[0].id ^ ziel {
+			if knoten.is_empty() { return knoten }
+			beste_entfernung = knoten[0].id ^ ziel;
+			let anf = KrpcAnfrage::FindNode { ziel, will: None };
+			let r1 = self.anfrage_senden(
+				knoten[0].clone(),
+				anf,
+				"knoten_iterativ_suchen",
+				true).await;
+			
+			let r2 = match r1 {
+				Ok(a) => a,
+				Err(err) => {
+					log::warn!("Fehler bei knoten_iterativ_suchen: {err}");
+					continue;
+				}
+			};
+			
+			// unwrap: Kann nur Err sein wenn der Sender weg ist.
+			//         Das sollte nie passieren.
+			let aw = match r2.await.unwrap() {
+				Anfrageergebnis::Ok(aw) => aw,
+				_ => {
+					knoten.remove(0);
+					continue;
+				}
+			};
+			
+			match aw {
+				KrpcAntwort::FindNode { knoten_v4, knoten_v6 } => {
+					// TODO zu kompliziert
+					let knoten_res: Option<Vec<KnotenInfo<A>>> =
+						if A::IST_IPV4 {
+						knoten_v4.map(|v| v.into_iter().map(|k| KnotenInfo { 
+							id: k.id,
+							addr: A::aus_socket_addr(k.addr.into()).unwrap()
+						}).collect())
+					} else {
+						knoten_v6.map(|v| v.into_iter().map(|k| KnotenInfo { 
+							id: k.id,
+							addr: A::aus_socket_addr(k.addr.into()).unwrap()
+						}).collect())
+					};
+					if let Some(v) = knoten_res {
+						knoten.extend_from_slice(v.as_slice());
+					}
+				},
+				aw => {
+					let m = aw.methode();
+					log::debug!("knoten_iterativ_suchen: unpassende Antwort für find_nodes Anfrage: {m}");
+				},
+			}
+			
+			knoten.sort_by_key(|k| k.id ^ ziel);
+		}
+		
+		let len = knoten.len();
+		log::debug!("knoten_iterativ_suchen: {len} Treffer.");
+		knoten
 	}
 }
