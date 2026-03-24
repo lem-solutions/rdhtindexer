@@ -1,7 +1,7 @@
-use std::{collections::{HashSet, VecDeque}, rc::Rc, sync::Arc, time::{Duration, Instant}};
+use std::{collections::{HashSet, VecDeque}, rc::Rc, sync::Arc, time::{Duration, Instant, SystemTime}};
 use std::sync::Mutex;
 
-use smol::{channel::*, stream::Stream};
+use smol::{Timer, channel::*, stream::Stream};
 use smol::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use smol::LocalExecutor;
 
@@ -53,62 +53,67 @@ impl KnotenSperrliste {
 	}
 }
 
-pub struct Scanner<A: Addr> {
-	zielpuffer: Mutex<VecDeque<(U160, SocketAddr)>>,
+pub struct Scanner<A: Addr + 'static> {
+	knoten_rx: Receiver<(U160, SocketAddr)>,
+	knoten_tx: Sender<(U160, SocketAddr)>,
 	info_hash_rx: Receiver<InfoHashMitKnoten>,
 	info_hash_tx: Sender<InfoHashMitKnoten>,
 	sperrliste: Mutex<KnotenSperrliste>,
-	rx_knoten: Receiver<(U160, SocketAddr)>,
-	dht_knoten: Rc<DhtKnoten<A>>,
+	knoten_rx_extra: Receiver<(U160, SocketAddr)>,
+	dht_knoten: Arc<DhtKnoten<A>>,
 	
 }
-impl<A: Addr + 'static> Scanner<A> {
+impl<A: Addr> Scanner<A> {
 	pub fn neu(
-		dht_knoten: DhtKnoten<A>,
+		dht_knoten: Arc<DhtKnoten<A>>,
 		rx_knoten: Receiver<(U160, SocketAddr)>,
 	) -> Self {
 		let (info_hash_tx, info_hash_rx) = unbounded();
+		let (knoten_tx, knoten_rx) = unbounded();
 		Scanner {
-			zielpuffer: Mutex::new(VecDeque::new()),
+			knoten_tx,
+			knoten_rx,
 			sperrliste: Mutex::new(KnotenSperrliste::neu()),
 			info_hash_rx,
 			info_hash_tx,
-			dht_knoten: Rc::new(dht_knoten),
-			rx_knoten,
+			dht_knoten: dht_knoten,
+			knoten_rx_extra: rx_knoten,
 		}
 	}
 	
-	/*
-	pub fn scannen<'ex>(self, async_exec: LocalExecutor<'ex>) -> (impl Stream<Item=InfoHashMitKnoten>, LocalExecutor<'ex>) {
+	
+	pub fn scannen(self: Arc<Self>) -> impl Stream<Item=InfoHashMitKnoten> {
 		let rx = self.info_hash_rx.clone();
 		
-		// let rc = self.dht_knoten.clone();
-		let arc_self = Arc::new(self);
-		let arc2= arc_self.clone();
 		
+		smol::spawn(self.scannen_intern()).detach();
 		
-		// rc.starten(bootstrap_knoten, &arc_self.executor);
-		
-		let f = arc2.scannen_intern(&async_exec);
-		
-		async_exec.spawn(f).detach();
-		(rx, async_exec)
+		rx
 	}
-	*/
 	
-	async fn scannen_intern<'ex>(self: Arc<Self>, async_exec: &LocalExecutor<'ex> ) -> Result<(), Fehler> {
+	
+	async fn scannen_intern(self: Arc<Self>) -> Result<(), Fehler> {
+		let mut letze_zufallssuche = std::time::SystemTime::UNIX_EPOCH;
 		loop {
-			self.extra_knoten_einlesen();
-			let arc2 = self.clone();
+			let self_arc2 = self.clone();
 			
-			match self.zielpuffer.lock().unwrap().pop_front() {
-				Some(k) => async_exec.spawn(async move {
-					if let Err(e) = arc2.knoten_scannen(k).await {
+			
+			let res = self.knoten_rx_extra.try_recv().or_else(|_| self.knoten_rx.try_recv());
+			match res {
+				Ok(k) => smol::spawn(async move {
+					if let Err(e) = self_arc2.knoten_scannen(k).await {
 						log::warn!("Fehler beim Scannen: {e}");
 					}
 				}).detach(),
-				None => {
-					self.zufallssuche().await;
+				Err(_) => {
+					if letze_zufallssuche.elapsed().unwrap() > Duration::from_secs(30) {
+						log::debug!("Scanner: neue Zufallssuche");
+						let self2 = self.clone();
+						smol::spawn(async move {self2.zufallssuche()}).detach();
+						letze_zufallssuche = SystemTime::now();
+					} else {
+						Timer::after(Duration::from_secs(1)).await;
+					}
 				}
 			}
 		}
@@ -155,12 +160,15 @@ impl<A: Addr + 'static> Scanner<A> {
 				k.addr.into()
 			)).collect())
 		};
+		let knoten = knoten_res.unwrap_or_default();
 		
 		let mut neuer_zielknoten = false;
-		for k in knoten_res.unwrap_or_default() {
+		let knoten_len = knoten.len();
+		for k in knoten {
 			neuer_zielknoten |= !self.zielpuffer_push(k);
 		}
 		
+		log::trace!("neue_knoten_einfügen: anz:{knoten_len}, neue:{neuer_zielknoten})");
 		neuer_zielknoten
 	}
 	
@@ -175,7 +183,7 @@ impl<A: Addr + 'static> Scanner<A> {
 		loop {
 			// Wenn wir sowieso genug Knoten in Reserve haben geben wir einfach auf.
 			if (!sample_infohashes || zielnähe_bits > 0) && 
-				self.zielpuffer.lock().unwrap().len() >= KNOTEN_NACHSCAN_SCHWELLWERT
+				self.knoten_rx_extra.len() + self.knoten_rx.len() >= KNOTEN_NACHSCAN_SCHWELLWERT
 			{
 				break;
 			}
@@ -226,7 +234,10 @@ impl<A: Addr + 'static> Scanner<A> {
 						zielnähe_bits += 1;
 					}
 				}
-				_ => break,
+				m => {
+					log::debug!("{m:?}");
+					break;
+				},
 			}
 		}
 		
@@ -296,38 +307,36 @@ impl<A: Addr + 'static> Scanner<A> {
 	}
 	*/
 	
-	async fn zufallssuche(&self) {
-		let neue_knoten = self
-			.dht_knoten
-			.knoten_iterativ_suchen(U160::zufällig())
-			.await;
+	async fn zufallssuche(self: Arc<Self>) {
+		let (info_tx , info_rx) : (Sender<KnotenInfo<A>>, _) = smol::channel::unbounded();
+		let self2 = self.clone();
+		smol::spawn(async move {
+			while let Ok(k) = info_rx.recv().await {
+				self2.zielpuffer_push((k.id, k.addr.into()));
+			}
+		}).detach();
 		
-		if neue_knoten.is_empty() { return; }
-		self.zielpuffer
+		let self3 = self.clone();
+		smol::spawn(async move {self3
+			.dht_knoten
+			.knoten_iterativ_suchen(U160::zufällig(), info_tx).await}).detach();
+		
+		/*self.zielpuffer
 			.lock()
 			.unwrap()
-			.extend(neue_knoten.into_iter().map(|k| (k.id, k.addr.into())));
-	}
-	
-	fn extra_knoten_einlesen(&self) {
-		while let Ok(x) = self.rx_knoten.try_recv() {
-			self.zielpuffer_push(x);
-		}
+			.extend(neue_knoten.into_iter().map(|k| (k.id, k.addr.into())));*/
 	}
 	
 	/// Fügt den gegebenen Knoten ein und gibt zurück ob dieser bereits 
 	/// vorhanden war. Wenn KNOTENPUFFERGRÖßE erreicht ist werden die
 	/// ältesten Knoten gelöscht.
 	fn zielpuffer_push(&self, obj: (U160, SocketAddr)) -> bool {
-		let mut zielpuffer = self.zielpuffer.lock().unwrap();
 		let schon_gesehen = self.sperrliste.lock().unwrap().gesehen(obj.0);
-		if schon_gesehen {
-			while zielpuffer.len() >= KNOTENPUFFERGRÖßE - 1 {
-				zielpuffer.pop_front();
-			}
-			zielpuffer.push_back((obj.0, obj.1));
+		if !schon_gesehen {
+			self.knoten_tx.force_send(obj).unwrap();
 		}
 		
 		schon_gesehen
 	}
+	
 }

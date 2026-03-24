@@ -21,6 +21,7 @@ enum KnotenStatus {
 	Schlecht,
 }
 
+#[derive(Clone)]
 pub struct KnotenInfo<T> {
 	/// Hat dieser Knoten jemals auf eine Anfrage von uns geantwortet?
 	hat_geantwortet: bool,

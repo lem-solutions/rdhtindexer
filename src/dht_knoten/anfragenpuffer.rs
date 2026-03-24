@@ -7,6 +7,7 @@ use event_listener::{Event, EventListener};
 use oneshot::Sender as EinzelSender;
 use oneshot::Receiver as EinzelEmpfänger;
 
+#[derive(Debug)]
 pub enum Anfrageergebnis {
 	Ok(KrpcAntwort),
 	Fehler(KrpcFehler),
@@ -134,7 +135,7 @@ impl<'a> ZeitüberschreitungsIter<'a> {
 	/// Funktion Zeit vergangen sein kann ist es nicht garrantiert das der
 	/// zurückgebebene Zeitpunkt in der Zukunft liegt.
 	pub fn baldigste_zeitgrenze(mut self) -> Option<Instant> {
-		assert!(self.anfragen_iter.next().is_none());
+		while self.next().is_some() {}
 		self.baldigste_zeitgrenze
 	}
 }

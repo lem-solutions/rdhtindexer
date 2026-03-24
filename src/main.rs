@@ -47,12 +47,12 @@ fn main() {
 		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(0,0,0,0), 53722),
 		tempomat,
 		knoten_kanäle,
-		1,
+		128,
 		Duration::from_secs(30),
 		1024,
 		Duration::from_hours(6),
 	);
-	let knoten = smol::block_on(knoten_fut).unwrap();
+	let knoten = Arc::new(smol::block_on(knoten_fut).unwrap());
 	
 
 	
@@ -75,9 +75,11 @@ fn main() {
 	let bootstrap = vec![
 		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(212,129,33,59), 6881)
 	];
-	let async_exec = knoten.starten(bootstrap);
-	// let scanner = Scanner::neu(knoten, knoten_empfänger.knoten);
-	// let (infos, async_exec) = scanner.scannen(async_exec);
+	knoten.clone().starten(bootstrap);
+	
+	
+	let scanner = Arc::new(Scanner::neu(knoten, knoten_empfänger.knoten));
+	let infos = scanner.scannen();
 	
 	
 	
@@ -86,25 +88,21 @@ fn main() {
 		smol::future::block_on(async_exec.tick());
 	}
 	*/
-	/*
 	
-	
-	async_exec.spawn(async {
-		let mut infos = std::pin::pin!(scanner.scannen(&async_exec));
-		while let Some(info) = infos.next().await {
+	smol::block_on(async {
+		let mut infos_pin = std::pin::pin!(infos);
+		while let Some(info) = infos_pin.next().await {
 			let info_hash = info.info_hash;
 			let addr = info.addr;
 			log::info!("INFOHASH {info_hash} {addr}");
 		}
 	});
-	*/
 	
 	/*
 	loop {
 		smol::future::block_on(async_exec.tick());
 	}
 	*/
-	
 	
 	
 }

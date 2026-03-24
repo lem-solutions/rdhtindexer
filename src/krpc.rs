@@ -1,3 +1,5 @@
+use std::fmt::{Debug, Display, Error, Formatter};
+
 use crate::datentypen::{U160, KnotenInfo};
 use crate::addr_generisch::Addr;
 
@@ -446,11 +448,25 @@ pub enum KrpcAntwort {
 	},
 	AnnouncePeer,
 	SampleInfohashes{
-		interval_sek: u16,
+		// ist manchmal nicht Vorhanden
+		interval_sek: Option<u16>,
 		knoten_v4: Option<Vec<KnotenInfo<SocketAddrV4>>>,
 		knoten_v6: Option<Vec<KnotenInfo<SocketAddrV6>>>,
-		anz_infohashes: usize,
+		// ist manchmal nicht Vorhanden
+		anz_infohashes: Option<usize>,
 		info_hashes: Vec<U160>,
+	}
+}
+impl std::fmt::Debug for KrpcAntwort {
+	fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		match self {
+			KrpcAntwort::Ping => write!(fmt, "AW Ping")?,
+			KrpcAntwort::FindNode { .. } => write!(fmt, "AW FindNode")?,
+			KrpcAntwort::GetPeers { .. } => write!(fmt, "AW GetPeers")?,
+			KrpcAntwort::AnnouncePeer => write!(fmt, "AW AnnouncePeer")?,
+			KrpcAntwort::SampleInfohashes { .. } => write!(fmt, "AW SampleInfohashes")?,
+		}
+		Ok(())
 	}
 }
 impl KrpcAntwort {
@@ -497,7 +513,9 @@ impl KrpcAntwort {
 			},
 			KrpcAntwort::AnnouncePeer => {},
 			KrpcAntwort::SampleInfohashes { interval_sek, knoten_v4, knoten_v6, anz_infohashes, info_hashes } => {
-				en.emit_pair(b"interval", interval_sek)?;
+				if let Some(i) = interval_sek {
+					en.emit_pair(b"interval", i)?;
+				}
 				if let Some(v) = knoten_v4 {
 					en.emit_pair_with(b"nodes", |e| {
 						e.emit_bytes(knotenliste_kodieren(v.iter()).as_slice())
@@ -508,7 +526,9 @@ impl KrpcAntwort {
 						e.emit_bytes(knotenliste_kodieren(v.iter()).as_slice())
 					})?;
 				}
-				en.emit_pair(b"num",anz_infohashes)?;
+				if let Some(n) = anz_infohashes {
+					en.emit_pair(b"num",n)?;
+				}
 				en.emit_pair_with(b"samples", |e| {
 					e.emit_bytes(hashliste_kodieren(info_hashes.iter()).as_slice())
 				})?;
@@ -582,9 +602,9 @@ impl KrpcAntwort {
 			id: id.ok_or(DeErr::missing_field("id"))?,
 			ext_ip,
 			aw: KrpcAntwort::SampleInfohashes {
-				interval_sek: interval_sek.ok_or(DeErr::missing_field("interval"))?,
+				interval_sek: interval_sek,
 				knoten_v4, knoten_v6,
-				anz_infohashes: anz_infohashes.ok_or(DeErr::missing_field("num"))?,
+				anz_infohashes: anz_infohashes,
 				info_hashes: info_hashes.ok_or(DeErr::missing_field("samples"))?,
 			},
 		})
@@ -594,6 +614,11 @@ impl KrpcAntwort {
 pub struct KrpcFehler {
 	pub fehlercode: KrpcFehlercode,
 	pub fehlermeldung: String,
+}
+impl Debug for KrpcFehler {
+	fn fmt(&self, fmt: &mut Formatter) -> Result<(), std::fmt::Error> {
+		write!(fmt,"{} {}", self.fehlercode, self.fehlermeldung)
+	}
 }
 impl ToBencode for KrpcFehler {
 	const MAX_DEPTH: usize = 1;
@@ -647,6 +672,17 @@ impl From<u64> for KrpcFehlercode {
 			203 => KrpcFehlercode::ProtokollFehler,
 			204 => KrpcFehlercode::UnbekannteMethode,
 			sonstiges => KrpcFehlercode::Unbekannt(sonstiges),
+		}
+	}
+}
+impl Display for KrpcFehlercode {
+	fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
+		match self {
+			KrpcFehlercode::Allgemein => write!(fmt, "201"),
+			KrpcFehlercode::ServerFehler => write!(fmt, "202"),
+			KrpcFehlercode::ProtokollFehler => write!(fmt, "203"),
+			KrpcFehlercode::UnbekannteMethode => write!(fmt, "204"),
+			KrpcFehlercode::Unbekannt(n) => write!(fmt, "{}", n),
 		}
 	}
 }

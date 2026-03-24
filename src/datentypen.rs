@@ -36,6 +36,12 @@ impl fmt::Display for U160 {
 	}
 }
 
+impl fmt::Debug for U160 {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		<Self as fmt::Display>::fmt(self, f)
+	}
+}
+
 
 impl U160 {
 	pub fn bits<'a>(&'a self) -> U160BitIter<'a> {
