@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use metrics::counter;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use smol::stream::StreamExt;
 
@@ -50,10 +51,8 @@ fn main() {
 
 	smol::block_on(async {
 		let mut infos_pin = std::pin::pin!(infos);
-		while let Some(info) = infos_pin.next().await {
-			let info_hash = info.info_hash;
-			let addr = info.addr;
-			log::info!("INFOHASH {info_hash} {addr}");
+		while let Some(_) = infos_pin.next().await {
+			counter!("infohashes").increment(1);
 		}
 	});
 }

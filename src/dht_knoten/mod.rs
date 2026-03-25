@@ -55,7 +55,7 @@ pub struct DhtKnoten<A: Addr> {
 	tempomat: Arc<Tempomat>,
 	bei_announce_peer: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
 	bei_get_peers: Box<dyn Fn(InfoHashMitKnoten) + Send + Sync>,
-	bei_eingehender_anfrage: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
+	bei_eingehender_nachricht: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
 
 	anfragen_zeitgrenze: Duration,
 	gestartet: AtomicBool,
@@ -73,7 +73,7 @@ impl<A: Addr> DhtKnoten<A> {
 		// die Funktionen dürfen nicht Blocken
 		bei_announce_peer: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
 		bei_get_peers: Box<dyn Fn(InfoHashMitKnoten) + Send + Sync>,
-		bei_eingehender_anfrage: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
+		bei_eingehender_nachricht: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
 	) -> Result<Self, IoError> {
 		Ok(DhtKnoten {
 			// Die IP Addresse ist wahrscheinlich nicht die externe, deswegen
@@ -107,7 +107,7 @@ impl<A: Addr> DhtKnoten<A> {
 			gestartet: false.into(),
 			bei_announce_peer,
 			bei_get_peers,
-			bei_eingehender_anfrage,
+			bei_eingehender_nachricht,
 		})
 	}
 
@@ -239,7 +239,7 @@ impl<A: Addr> DhtKnoten<A> {
 				Ok(n) => n,
 				Err(e) => {
 					log::debug!(
-						"Konnte UDP Paket von {quell_addr} nicht deserialisieren: {e} Inhalt: {nachricht_bytes:02X?}"
+						"Konnte UDP Paket von {quell_addr} nicht deserialisieren: {e}"
 					);
 					self
 						.tempomat
@@ -281,8 +281,9 @@ impl<A: Addr> DhtKnoten<A> {
 							.routing_tabelle
 							.write()
 							.unwrap()
-							.antwort_erhalten(id, quell_addr);
+							.antwort_erhalten(id, quell_addr.clone());
 						self.externe_addr_prüfen(ext_ip);
+						(self.bei_eingehender_nachricht)((id, quell_addr.into()));
 						histogram!("Antwortlatenz").record(
 							(anfrage_info.zeitgrenze - self.anfragen_zeitgrenze)
 								.elapsed()
@@ -336,7 +337,7 @@ impl<A: Addr> DhtKnoten<A> {
 			return;
 		}
 
-		(self.bei_eingehender_anfrage)((req_id, quell_addr.clone().into()));
+		(self.bei_eingehender_nachricht)((req_id, quell_addr.clone().into()));
 
 		let aw = match anf {
 			KrpcAnfrage::Ping => Ok(KrpcAntwort::Ping),
@@ -782,7 +783,6 @@ impl<A: Addr> DhtKnoten<A> {
 				return knoten;
 			}
 			let anf = KrpcAnfrage::FindNode { ziel, will: None };
-			log::trace!("TX REQ knoten_iterativ_suchen");
 			let r1 = self
 				.anfrage_senden(knoten[0].clone(), anf, "knoten_iterativ_suchen", true)
 				.await;

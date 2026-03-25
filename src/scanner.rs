@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
+use metrics::gauge;
 use smol::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use smol::{Timer, channel::*, stream::Stream};
 
@@ -94,25 +95,32 @@ impl<A: Addr> Scanner<A> {
 
 	async fn scannen_intern(self: Arc<Self>) -> Result<(), Fehler> {
 		let mut letze_zufallssuche = std::time::SystemTime::UNIX_EPOCH;
+		let mut anfang = true;
 		loop {
 			let self_arc2 = self.clone();
-
-			let res = self
-				.knoten_rx_extra
-				.try_recv()
-				.or_else(|_| self.knoten_rx.try_recv());
-			match res {
-				Ok(k) => smol::spawn(async move {
-					if let Err(e) = self_arc2.knoten_scannen(k).await {
-						log::warn!("Fehler beim Scannen: {e}");
-					}
-				})
-				.detach(),
+			
+			while let Ok(k) = self.knoten_rx_extra.try_recv() {
+				self.zielpuffer_push(k);
+			}
+			
+			gauge!("Scanner Zielpuffer").set(self.knoten_rx.len() as f64);
+			
+			match self.knoten_rx.try_recv() {
+				Ok(k) => {
+					smol::spawn(async move {
+						if let Err(e) = self_arc2.knoten_scannen(k).await {
+							log::warn!("Fehler beim Scannen: {e}");
+						}
+					}).detach();
+					anfang = false;
+				},
 				Err(_) => {
-					if letze_zufallssuche.elapsed().unwrap() > Duration::from_secs(30) {
+					if letze_zufallssuche.elapsed().unwrap() > Duration::from_secs(30) &&
+						!anfang
+					{
 						log::debug!("Scanner: neue Zufallssuche");
 						let self2 = self.clone();
-						smol::spawn(async move { self2.zufallssuche() }).detach();
+						smol::spawn(async move { self2.zufallssuche().await }).detach();
 						letze_zufallssuche = SystemTime::now();
 					} else {
 						Timer::after(Duration::from_secs(1)).await;
@@ -143,6 +151,7 @@ impl<A: Addr> Scanner<A> {
 		for k in knoten {
 			neuer_zielknoten |= !self.zielpuffer_push(k);
 		}
+		gauge!("Scanner Zielpuffer").set(self.knoten_rx.len() as f64);
 
 		log::trace!(
 			"neue_knoten_einfügen: anz:{knoten_len}, neue:{neuer_zielknoten})"
@@ -150,10 +159,13 @@ impl<A: Addr> Scanner<A> {
 		neuer_zielknoten
 	}
 
+	
+	// TODO Diese Monströsität umschreiben.
 	async fn knoten_scannen(
 		&self,
 		knoten: (U160, SocketAddr),
 	) -> Result<(), Fehler> {
+		log::trace!("knoten_scannen: {}", knoten.1);
 		let mut sample_infohashes = true;
 		let mut zielnähe_bits = 0;
 		// Die Entfernung zum Knoten der unserem Zielknoten am nächsten ist.
@@ -222,13 +234,19 @@ impl<A: Addr> Scanner<A> {
 						.map(|id| id ^ knoten.0)
 						.min()
 						.unwrap_or(U160([255; 20]));
+					
+					
 					// Wenn wir von diesem Knoten keinen näheren bekommen geben wir auf.
 					if neue_entfernung >= letzte_entfernung {
 						break;
 					}
+					
 					letzte_entfernung = neue_entfernung;
 					if !self.neue_knoten_einfügen(knoten_v4, knoten_v6) {
+						sample_infohashes = false;
 						zielnähe_bits += 1;
+					} else {
+						break;
 					}
 				}
 				m => {
@@ -283,6 +301,7 @@ impl<A: Addr> Scanner<A> {
 		smol::spawn(async move {
 			while let Ok(k) = info_rx.recv().await {
 				self2.zielpuffer_push((k.id, k.addr.into()));
+				gauge!("Scanner Zielpuffer").set(self2.knoten_rx.len() as f64);
 			}
 		})
 		.detach();

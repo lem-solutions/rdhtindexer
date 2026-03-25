@@ -314,7 +314,7 @@ pub enum NachrichtTyp {
 	Fehler,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum AnfrageMethode {
 	Ping,
 	FindNode,
