@@ -33,7 +33,7 @@ fn main() {
 	let knoten_fut = DhtKnoten::neu(
 		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 53722),
 		tempomat,
-		4096,
+		6000,
 		Duration::from_secs(10),
 		1024,
 		Duration::from_hours(6),

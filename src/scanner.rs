@@ -3,10 +3,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
+use bloomfilter::Bloom;
 use metrics::gauge;
 use smol::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use smol::{Timer, channel::*, stream::Stream};
-use bloomfilter::Bloom;
 
 use crate::addr_generisch::Addr;
 use crate::dht_knoten::Anfrageergebnis;
@@ -19,15 +19,15 @@ use crate::{
 	krpc::{KrpcAnfrage, KrpcAntwort, KrpcFehler, KrpcFehlercode},
 };
 
-const BLOOM_FALSCH_POSITIV_RATE : f64 = 0.05;
-const BLOOM_SCHÄTZUNG_EINTRÄGE_PRO_ZEITGRENZE : usize = 15_000_000;
+const BLOOM_FALSCH_POSITIV_RATE: f64 = 0.05;
+const BLOOM_SCHÄTZUNG_EINTRÄGE_PRO_ZEITGRENZE: usize = 15_000_000;
 
 /// Minimale Wartezeit bevor ein Knoten neu gescannt werden darf. Muss
 /// mindestens 6 Stunden sein.
 const ZEITGRENZE: Duration = Duration::from_hours(6);
 
 #[allow(non_upper_case_globals)]
-const KNOTENPUFFERGRÖßE: usize = 2048;
+const KNOTENPUFFERGRÖßE: usize = 10000;
 
 /// Wenn der Knotenpuffer unter diese Größe fällt versuchen wir agressiver neue
 /// Knoten zu finden.
@@ -44,7 +44,9 @@ impl KnotenSperrliste {
 		KnotenSperrliste {
 			erledigt_a: Bloom::new_for_fp_rate(
 				BLOOM_SCHÄTZUNG_EINTRÄGE_PRO_ZEITGRENZE,
-				BLOOM_FALSCH_POSITIV_RATE).unwrap(),
+				BLOOM_FALSCH_POSITIV_RATE,
+			)
+			.unwrap(),
 			erledigt_b: None,
 			zeitstempel: Instant::now(),
 			anz_erledigt_a: 0,
@@ -59,22 +61,22 @@ impl KnotenSperrliste {
 		//      Falsch-Positiv Rate). Man könnte ausrechnen wie hoch diese
 		//      statistisch sein müsste.
 		if self.zeitstempel.elapsed() > ZEITGRENZE {
-			self.erledigt_b = Some(Bloom::new_for_fp_rate(
-				self.anz_erledigt_a,
-				BLOOM_FALSCH_POSITIV_RATE,
-			).unwrap());
+			self.erledigt_b = Some(
+				Bloom::new_for_fp_rate(self.anz_erledigt_a, BLOOM_FALSCH_POSITIV_RATE)
+					.unwrap(),
+			);
 			std::mem::swap(&mut self.erledigt_a, self.erledigt_b.as_mut().unwrap());
-			
+
 			self.anz_erledigt_a = 0;
 			self.zeitstempel = Instant::now();
 		}
-		
+
 		// b zuerst, da wie die ID nicht in a einfügen wollen, falls sie schon in b
 		// ist.
 		if let Some(ref b) = self.erledigt_b {
-			return b.check(&id)
+			return b.check(&id);
 		}
-		
+
 		if self.erledigt_a.check_and_set(&id) {
 			return true;
 		} else {
@@ -100,7 +102,7 @@ impl<A: Addr> Scanner<A> {
 		rx_knoten: Receiver<(U160, SocketAddr)>,
 	) -> Self {
 		let (info_hash_tx, info_hash_rx) = unbounded();
-		let (knoten_tx, knoten_rx) = bounded(KNOTENPUFFERGRÖßE);
+		let (knoten_tx, knoten_rx) = unbounded();
 		Scanner {
 			knoten_tx,
 			knoten_rx,
@@ -153,14 +155,12 @@ impl<A: Addr> Scanner<A> {
 		}
 	}
 
-	/// Versucht die entsprechenden Knoten in unsere Liste einzufügen und gibt
-	/// und gibt zurück ob mindestens ein Knoten dabei war den wir nicht schon
-	/// gesehen haben.
+	/// Versucht die entsprechenden Knoten in unsere Liste einzufügen.
 	fn neue_knoten_einfügen(
 		&self,
 		knoten_v4: Option<Vec<KnotenInfo<SocketAddrV4>>>,
 		knoten_v6: Option<Vec<KnotenInfo<SocketAddrV6>>>,
-	) -> bool {
+	) {
 		// TODO zu kompliziert
 		let knoten_res: Option<Vec<(U160, SocketAddr)>> = if A::IST_IPV4 {
 			knoten_v4.map(|v| v.into_iter().map(|k| (k.id, k.addr.into())).collect())
@@ -169,17 +169,13 @@ impl<A: Addr> Scanner<A> {
 		};
 		let knoten = knoten_res.unwrap_or_default();
 
-		let mut neuer_zielknoten = false;
 		let knoten_len = knoten.len();
 		for k in knoten {
-			neuer_zielknoten |= !self.zielpuffer_push(k);
+			self.zielpuffer_push(k);
 		}
 		gauge!("Scanner Zielpuffer").set(self.knoten_rx.len() as f64);
 
-		log::trace!(
-			"neue_knoten_einfügen: anz:{knoten_len}, neue:{neuer_zielknoten})"
-		);
-		neuer_zielknoten
+		log::trace!("neue_knoten_einfügen: anz:{knoten_len}");
 	}
 
 	async fn knoten_scannen(
@@ -304,12 +300,13 @@ impl<A: Addr> Scanner<A> {
 	/// Fügt den gegebenen Knoten ein und gibt zurück ob dieser bereits
 	/// vorhanden war. Wenn KNOTENPUFFERGRÖßE erreicht ist werden die
 	/// ältesten Knoten gelöscht.
-	fn zielpuffer_push(&self, obj: (U160, SocketAddr)) -> bool {
-		let schon_gesehen = self.sperrliste.lock().unwrap().gesehen(obj.0);
-		if !schon_gesehen {
-			self.knoten_tx.force_send(obj).unwrap();
+	fn zielpuffer_push(&self, obj: (U160, SocketAddr)) {
+		if self.knoten_tx.len() >= KNOTENPUFFERGRÖßE {
+			return;
 		}
 
-		schon_gesehen
+		if !self.sperrliste.lock().unwrap().gesehen(obj.0) {
+			self.knoten_tx.try_send(obj).unwrap();
+		}
 	}
 }

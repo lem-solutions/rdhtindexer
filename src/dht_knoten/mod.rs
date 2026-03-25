@@ -220,16 +220,16 @@ impl<A: Addr> DhtKnoten<A> {
 		loop {
 			let (udp_len, quell_addr_enum) =
 				self.udp.recv_from(&mut puffer[..]).await?;
-			
+
 			// TODO Wirklich unmöglich?
-			let quell_addr = A::aus_socket_addr(quell_addr_enum).unwrap(); 
-			
+			let quell_addr = A::aus_socket_addr(quell_addr_enum).unwrap();
+
 			// Es gibt nichts das es nicht gibt, heißt aber nicht das es nicht Müll
 			// ist ;)
 			if quell_addr.port() == 0 {
 				log::debug!("Paket von Port 0: {quell_addr} {:x?}", &puffer[..udp_len]);
 			}
-			
+
 			self.tempomat.melden_runter(udp_len);
 			if udp_len > MAX_UDP_LEN {
 				log::warn!("UDP Paket zu groß ({udp_len} > {MAX_UDP_LEN})");
