@@ -225,28 +225,26 @@ impl<A: Addr> DhtKnoten<A> {
 			}
 			let nachricht_bytes = &puffer[..udp_len];
 
-			let nachricht: KrpcNachricht<A> = match KrpcNachricht::einlesen(
-				nachricht_bytes,
-				|txid_bytes| {
+			let nachricht: KrpcNachricht<A> =
+				match KrpcNachricht::einlesen(nachricht_bytes, |txid_bytes| {
 					let txid = u16::from_be_bytes(txid_bytes.try_into().ok()?);
 					self
 						.ausstehende_anfragen
 						.read()
 						.unwrap()
 						.methode_für_txid(txid as usize)
-				},
-			) {
-				Ok(n) => n,
-				Err(e) => {
-					log::debug!(
-						"Konnte UDP Paket von {quell_addr} nicht deserialisieren: {e}"
-					);
-					self
-						.tempomat
-						.melden_runter("fehlerhafte UDP Pakete", udp_len);
-					continue;
-				}
-			};
+				}) {
+					Ok(n) => n,
+					Err(e) => {
+						log::debug!(
+							"Konnte UDP Paket von {quell_addr} nicht deserialisieren: {e}"
+						);
+						self
+							.tempomat
+							.melden_runter("fehlerhafte UDP Pakete", udp_len);
+						continue;
+					}
+				};
 
 			if matches!(nachricht.inhalt, KrpcInhalt::Anfrage { .. }) {
 				log::trace!("RX REQ {quell_addr}");

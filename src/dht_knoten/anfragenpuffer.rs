@@ -85,7 +85,7 @@ impl Anfragenpuffer {
 			self.index.set(idx, true);
 			assert!(self.anfragen[idx].replace(anfrage).is_none());
 			gauge!("Anfragenpuffer anz_anfragen").set(self.index.count_ones() as f64);
-			
+
 			Ok(idx)
 		} else {
 			Err((anfrage, self.anfrage_frei.listen()))
