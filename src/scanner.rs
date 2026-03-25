@@ -9,6 +9,7 @@ use smol::{Timer, channel::*, stream::Stream};
 
 use crate::addr_generisch::Addr;
 use crate::dht_knoten::Anfrageergebnis;
+use crate::dht_knoten::InfoHashesMitKnoten;
 use crate::tempomat::Prio;
 use crate::{
 	Fehler,
@@ -64,8 +65,8 @@ impl KnotenSperrliste {
 pub struct Scanner<A: Addr + 'static> {
 	knoten_rx: Receiver<(U160, SocketAddr)>,
 	knoten_tx: Sender<(U160, SocketAddr)>,
-	info_hash_rx: Receiver<InfoHashMitKnoten>,
-	info_hash_tx: Sender<InfoHashMitKnoten>,
+	info_hash_rx: Receiver<InfoHashesMitKnoten>,
+	info_hash_tx: Sender<InfoHashesMitKnoten>,
 	sperrliste: Mutex<KnotenSperrliste>,
 	knoten_rx_extra: Receiver<(U160, SocketAddr)>,
 	dht_knoten: Arc<DhtKnoten<A>>,
@@ -88,7 +89,7 @@ impl<A: Addr> Scanner<A> {
 		}
 	}
 
-	pub fn scannen(self: Arc<Self>) -> impl Stream<Item = InfoHashMitKnoten> {
+	pub fn scannen(self: Arc<Self>) -> impl Stream<Item = InfoHashesMitKnoten> {
 		let rx = self.info_hash_rx.clone();
 		smol::spawn(self.scannen_intern()).detach();
 		rx
@@ -196,17 +197,15 @@ impl<A: Addr> Scanner<A> {
 					info_hashes,
 					..
 				} => {
-					for info_hash in info_hashes {
-						self
-							.info_hash_tx
-							.send(InfoHashMitKnoten {
-								info_hash,
-								knoten_id: knoten.0,
-								addr: knoten.1,
-							})
-							.await
-							.unwrap();
-					}
+					self
+						.info_hash_tx
+						.send(InfoHashesMitKnoten {
+							info_hashes,
+							knoten_id: knoten.0,
+							addr: knoten.1,
+						})
+						.await
+						.unwrap();
 
 					(knoten_v4, knoten_v6)
 				}
