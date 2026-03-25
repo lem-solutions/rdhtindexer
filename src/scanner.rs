@@ -98,25 +98,26 @@ impl<A: Addr> Scanner<A> {
 		let mut anfang = true;
 		loop {
 			let self_arc2 = self.clone();
-			
+
 			while let Ok(k) = self.knoten_rx_extra.try_recv() {
 				self.zielpuffer_push(k);
 			}
-			
+
 			gauge!("Scanner Zielpuffer").set(self.knoten_rx.len() as f64);
-			
+
 			match self.knoten_rx.try_recv() {
 				Ok(k) => {
 					smol::spawn(async move {
 						if let Err(e) = self_arc2.knoten_scannen(k).await {
 							log::warn!("Fehler beim Scannen: {e}");
 						}
-					}).detach();
+					})
+					.detach();
 					anfang = false;
-				},
+				}
 				Err(_) => {
-					if letze_zufallssuche.elapsed().unwrap() > Duration::from_secs(30) &&
-						!anfang
+					if letze_zufallssuche.elapsed().unwrap() > Duration::from_secs(30)
+						&& !anfang
 					{
 						log::debug!("Scanner: neue Zufallssuche");
 						let self2 = self.clone();
@@ -159,112 +160,77 @@ impl<A: Addr> Scanner<A> {
 		neuer_zielknoten
 	}
 
-	
-	// TODO Diese Monströsität umschreiben.
 	async fn knoten_scannen(
-		&self,
+		self: Arc<Self>,
 		knoten: (U160, SocketAddr),
 	) -> Result<(), Fehler> {
-		log::trace!("knoten_scannen: {}", knoten.1);
-		let mut sample_infohashes = true;
-		let mut zielnähe_bits = 0;
-		// Die Entfernung zum Knoten der unserem Zielknoten am nächsten ist.
-		let mut letzte_entfernung = U160([255; 20]);
-		loop {
-			// Wenn wir sowieso genug Knoten in Reserve haben geben wir einfach auf.
-			if (!sample_infohashes || zielnähe_bits > 0)
-				&& self.knoten_rx_extra.len() + self.knoten_rx.len()
-					>= KNOTEN_NACHSCAN_SCHWELLWERT
-			{
-				break;
-			}
+		// Wir warten bis die Anfrage abgeschickt ist(sodass wir
+		// blockiert werden wenn die maximale Anzahl an ausstehenden
+		// Anfragen in `DhtKnoten` erreicht ist)
+		let self2 = self.clone();
+		let aw_fut = self.anfrage_senden(knoten, 0, true).await?;
 
-			match self
-				.anfrage_senden(knoten, zielnähe_bits, sample_infohashes)
-				.await?
-			{
-				Anfrageergebnis::Fehler(f)
-					if f.fehlercode == KrpcFehlercode::UnbekannteMethode
-						&& sample_infohashes =>
-				{
-					sample_infohashes = false;
-					continue;
-				}
-				Anfrageergebnis::Ok(aw) => {
-					let (knoten_v4, knoten_v6) = match aw {
-						KrpcAntwort::FindNode {
-							knoten_v4,
-							knoten_v6,
-						} => (knoten_v4, knoten_v6),
-						KrpcAntwort::SampleInfohashes {
-							knoten_v4,
-							knoten_v6,
-							info_hashes,
-							..
-						} => {
-							for info_hash in info_hashes {
-								self
-									.info_hash_tx
-									.send(InfoHashMitKnoten {
-										info_hash,
-										knoten_id: knoten.0,
-										addr: knoten.1,
-									})
-									.await
-									.unwrap();
-							}
+		// Aber wir warten nicht auf die Antwort.
+		let fut = async move {
+			let aw = aw_fut.await.unwrap();
+			self2.antwort_verarbeiten(aw, knoten).await;
+		};
 
-							(knoten_v4, knoten_v6)
-						}
-						_ => break,
-					};
-
-					let neue_entfernung = knoten_v4
-						.as_ref()
-						.unwrap_or(&Vec::new())
-						.iter()
-						.map(|k| k.id)
-						.chain(
-							knoten_v6
-								.as_ref()
-								.unwrap_or(&Vec::new())
-								.iter()
-								.map(|k| k.id),
-						)
-						.map(|id| id ^ knoten.0)
-						.min()
-						.unwrap_or(U160([255; 20]));
-					
-					
-					// Wenn wir von diesem Knoten keinen näheren bekommen geben wir auf.
-					if neue_entfernung >= letzte_entfernung {
-						break;
-					}
-					
-					letzte_entfernung = neue_entfernung;
-					if !self.neue_knoten_einfügen(knoten_v4, knoten_v6) {
-						sample_infohashes = false;
-						zielnähe_bits += 1;
-					} else {
-						break;
-					}
-				}
-				m => {
-					log::debug!("{m:?}");
-					break;
-				}
-			}
-		}
+		smol::spawn(fut).detach();
 
 		Ok(())
 	}
 
+	async fn antwort_verarbeiten(
+		self: Arc<Self>,
+		erg: Anfrageergebnis,
+		knoten: (U160, SocketAddr),
+	) {
+		if let Anfrageergebnis::Ok(aw) = erg {
+			let (knoten_v4, knoten_v6) = match aw {
+				KrpcAntwort::FindNode {
+					knoten_v4,
+					knoten_v6,
+				} => (knoten_v4, knoten_v6),
+				KrpcAntwort::SampleInfohashes {
+					knoten_v4,
+					knoten_v6,
+					info_hashes,
+					..
+				} => {
+					for info_hash in info_hashes {
+						self
+							.info_hash_tx
+							.send(InfoHashMitKnoten {
+								info_hash,
+								knoten_id: knoten.0,
+								addr: knoten.1,
+							})
+							.await
+							.unwrap();
+					}
+
+					(knoten_v4, knoten_v6)
+				}
+				_ => unreachable!(
+					"Die korrekte Methode sollte durch `Anfragenpuffer` garantiert sein."
+				),
+			};
+			self.neue_knoten_einfügen(knoten_v4, knoten_v6);
+		} else {
+			log::debug!("AW {erg:?}");
+		}
+	}
+
 	async fn anfrage_senden(
-		&self,
+		self: Arc<Self>,
 		knoten: (U160, SocketAddr),
 		zielnähe_bits: usize,
 		sample_infohashes: bool,
-	) -> Result<Anfrageergebnis, Fehler> {
+	) -> Result<
+		impl Future<Output = Result<Anfrageergebnis, oneshot::RecvError>>,
+		Fehler,
+	> {
 		let anf = if sample_infohashes {
 			KrpcAnfrage::SampleInfohashes {
 				ziel: knoten.0.n_bits_beibehalten(zielnähe_bits),
@@ -291,7 +257,7 @@ impl<A: Addr> Scanner<A> {
 			.await?;
 
 		// Das unwrap ist nur für den Kanal der nie versagen sollte.
-		Ok(f.await.unwrap())
+		Ok(f)
 	}
 
 	async fn zufallssuche(self: Arc<Self>) {
