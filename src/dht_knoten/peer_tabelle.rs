@@ -1,4 +1,5 @@
 use crate::datentypen::*;
+use metrics::*;
 use rand::prelude::IteratorRandom;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -147,6 +148,9 @@ impl<T: PartialEq> PeerTabelle<T> {
 				.remove(&self.info_hash_alter.pop_first().unwrap().1);
 			assert_eq!(self.info_hash_alter.len(), self.peers.len());
 		}
+
+		let anz_peers_ges = self.peers.values().map(|v| v.iter()).flatten().count();
+		gauge!("anzahl Peers").set(anz_peers_ges as f64);
 	}
 
 	fn alte_hashes_entfernen(&mut self) {
@@ -158,5 +162,8 @@ impl<T: PartialEq> PeerTabelle<T> {
 			e.remove();
 		}
 		assert_eq!(self.info_hash_alter.len(), self.peers.len());
+
+		let anz_peers_ges = self.peers.values().map(|v| v.iter()).flatten().count();
+		gauge!("anzahl Peers").set(anz_peers_ges as f64);
 	}
 }

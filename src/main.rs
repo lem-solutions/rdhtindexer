@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use metrics_exporter_prometheus::PrometheusBuilder;
 use smol::stream::StreamExt;
 
 mod addr_generisch;
@@ -19,6 +20,7 @@ use crate::scanner::Scanner;
 
 fn main() {
 	env_logger::init();
+	metriken();
 	let tempomat = Arc::new(tempomat::Tempomat::neu());
 
 	let (knoten_tx, knoten_rx) = smol::channel::unbounded();
@@ -54,4 +56,14 @@ fn main() {
 			log::info!("INFOHASH {info_hash} {addr}");
 		}
 	});
+}
+
+fn metriken() {
+	PrometheusBuilder::new()
+		.with_http_listener(std::net::SocketAddrV4::new(
+			std::net::Ipv4Addr::new(127, 0, 0, 1),
+			8090,
+		))
+		.install()
+		.unwrap();
 }

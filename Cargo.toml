@@ -22,6 +22,8 @@ bitvec = "1"
 event-listener = "5.4"
 
 env_logger = "0.11.8"
+metrics = "0.24.3"
+metrics-exporter-prometheus = "0.18.1"
 
 [features]
 ips_validieren = []

@@ -1,6 +1,7 @@
 use super::*;
 use bitvec::prelude::*;
 use event_listener::{Event, EventListener};
+use metrics::*;
 use oneshot::Sender as EinzelSender;
 
 #[derive(Debug)]
@@ -50,6 +51,7 @@ impl Anfragenpuffer {
 			self.anfrage_frei.notify(1);
 		}
 
+		gauge!("Anfragenpuffer anz_anfragen").set(self.index.count_ones() as f64);
 		anf_opt
 	}
 
@@ -82,6 +84,7 @@ impl Anfragenpuffer {
 		if let Some(idx) = self.index.first_zero() {
 			self.index.set(idx, true);
 			assert!(self.anfragen[idx].replace(anfrage).is_none());
+			gauge!("Anfragenpuffer anz_anfragen").set(self.index.count_ones() as f64);
 			Ok(idx)
 		} else {
 			Err((anfrage, self.anfrage_frei.listen()))
@@ -137,6 +140,9 @@ impl<'a> Iterator for ZeitüberschreitungsIter<'a> {
 				if anfrage_ref.zeitgrenze < Instant::now() {
 					let anfrage = eintrag.take().unwrap();
 					self.index.set(idx, false);
+					gauge!("Anfragenpuffer anz_anfragen")
+						.set(self.index.count_ones() as f64);
+					counter!("Zeitüberschreitungen").increment(1);
 					#[allow(unused_must_use)]
 					anfrage.sender.send(Anfrageergebnis::Zeitüberschreitung);
 					self.anfrage_frei.notify(1);

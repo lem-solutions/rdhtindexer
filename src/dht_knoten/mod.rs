@@ -1,6 +1,7 @@
 use crate::addr_generisch::Addr;
 use crate::datentypen::{KnotenInfo, U160};
 use bendy::encoding::ToBencode;
+use metrics::*;
 use smol::Timer;
 use smol::io::Error as IoError;
 use smol::net::{SocketAddr, UdpSocket};
@@ -282,6 +283,11 @@ impl<A: Addr> DhtKnoten<A> {
 							.unwrap()
 							.antwort_erhalten(id, quell_addr);
 						self.externe_addr_prüfen(ext_ip);
+						histogram!("Antwortlatenz").record(
+							(anfrage_info.zeitgrenze - self.anfragen_zeitgrenze)
+								.elapsed()
+								.as_millis() as f64,
+						);
 
 						Anfrageergebnis::Ok(aw)
 					}
@@ -401,6 +407,7 @@ impl<A: Addr> DhtKnoten<A> {
 		if let Err(e) = aw_senden_res {
 			log::warn!("Fehler beim Abschicken einer Antwort auf eine Anfrage: {e}");
 		}
+		counter!("eingehende Anfragen").increment(1);
 	}
 
 	fn anfrage_bearbeiten_sample_infohashes(
@@ -657,6 +664,7 @@ impl<A: Addr> DhtKnoten<A> {
 		};
 
 		self.nachricht_abschicken(&n, ziel, aufgabenbereich).await?;
+		counter!("ausgehende Antworten").increment(1);
 		Ok(())
 	}
 
@@ -678,6 +686,8 @@ impl<A: Addr> DhtKnoten<A> {
 		self
 			.nachricht_abschicken(&n, &ziel, aufgabenbereich)
 			.await?;
+
+		counter!("ausgehende Fehler").increment(1);
 		Ok(())
 	}
 
@@ -724,6 +734,7 @@ impl<A: Addr> DhtKnoten<A> {
 		};
 
 		let ziel_addr = &ziel.addr;
+		counter!("ausgehende Anfragen").increment(1);
 		log::trace!("TX REQ {anf_methode} {ziel_addr}");
 		self
 			.nachricht_abschicken(&n, &ziel.addr, aufgabenbereich)
@@ -844,7 +855,9 @@ impl<A: Addr> DhtKnoten<A> {
 
 		let len = knoten.len();
 		log::debug!("knoten_iterativ_suchen: {len} Treffer.");
-
+		counter!("knoten_iterativ_suchen anz Knoten")
+			.increment(len.try_into().unwrap());
+		counter!("knoten_iterativ_suchen abgeschlossen").increment(1);
 		knoten
 	}
 }

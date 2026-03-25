@@ -1,3 +1,4 @@
+use metrics::*;
 use std::num::Saturating;
 use std::time::{Duration, Instant};
 
@@ -142,7 +143,9 @@ impl<T> RoutingTabelle<T> {
 		}
 	}
 
-	pub fn fragwürdigen_knoten_finden(&self) -> Option<&KnotenInfo<T>> {
+	pub fn iter_fragwürdige_knoten(
+		&self,
+	) -> impl Iterator<Item = &KnotenInfo<T>> {
 		self
 			.buckets
 			.iter()
@@ -150,7 +153,10 @@ impl<T> RoutingTabelle<T> {
 			.flatten()
 			.filter_map(|k| k.as_ref())
 			.filter(|k| k.status() == KnotenStatus::Fragwürdig)
-			.next()
+	}
+
+	pub fn fragwürdigen_knoten_finden(&self) -> Option<&KnotenInfo<T>> {
+		self.iter_fragwürdige_knoten().next()
 	}
 
 	pub fn iter_gute_knoten(&self) -> impl Iterator<Item = &KnotenInfo<T>> {
@@ -282,6 +288,7 @@ impl<T> RoutingTabelle<T> {
 		{
 			a
 		} else {
+			self.metriken();
 			return true;
 		};
 
@@ -296,6 +303,7 @@ impl<T> RoutingTabelle<T> {
 			) {
 				a
 			} else {
+				self.metriken();
 				return true;
 			};
 		}
@@ -334,5 +342,12 @@ impl<T> RoutingTabelle<T> {
 				k.fehleranzahl = info.fehleranzahl;
 			},
 		);
+	}
+
+	fn metriken(&self) {
+		let anz_gut = self.iter_gute_knoten().count();
+		let anz_fragwürdig = self.iter_fragwürdige_knoten().count();
+		gauge!("routing_tabelle anz_gut").set(anz_gut as f64);
+		gauge!("routing_tabelle anz_fragwürdig").set(anz_fragwürdig as f64);
 	}
 }
