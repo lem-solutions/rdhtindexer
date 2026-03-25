@@ -22,7 +22,11 @@ use crate::scanner::Scanner;
 fn main() {
 	env_logger::init();
 	metriken();
-	let tempomat = Arc::new(tempomat::Tempomat::neu());
+	let tempomat = Arc::new(tempomat::Tempomat::neu(
+		1024 * 1024 * 2, // 3MiB/s ↑
+		1024 * 1024 * 4, // 5MiB/s ↓
+		1000,            // 1s Toleranz
+	));
 
 	let (knoten_tx, knoten_rx) = smol::channel::unbounded();
 
@@ -30,7 +34,7 @@ fn main() {
 		smol::net::SocketAddrV4::new(std::net::Ipv4Addr::new(0, 0, 0, 0), 53722),
 		tempomat,
 		128,
-		Duration::from_secs(30),
+		Duration::from_secs(10),
 		1024,
 		Duration::from_hours(6),
 		Box::new(|_| {}),

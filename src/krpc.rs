@@ -588,6 +588,8 @@ pub enum KrpcAntwort {
 		knoten_v6: Option<Vec<KnotenInfo<SocketAddrV6>>>,
 		// ist manchmal nicht Vorhanden
 		anz_infohashes: Option<usize>,
+		// ist manchmal nicht Vorhanden, in dem Fall interpretieren wir
+		// das als leere Liste.
 		info_hashes: Vec<U160>,
 	},
 }
@@ -782,7 +784,7 @@ impl KrpcAntwort {
 				knoten_v4,
 				knoten_v6,
 				anz_infohashes: anz_infohashes,
-				info_hashes: info_hashes.ok_or(DeErr::missing_field("samples"))?,
+				info_hashes: info_hashes.unwrap_or_else(|| Vec::new()),
 			},
 		})
 	}

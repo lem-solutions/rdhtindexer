@@ -141,7 +141,8 @@ impl<A: Addr> DhtKnoten<A> {
 							addr: knoten_addr.clone(),
 						},
 						KrpcAnfrage::Ping,
-						"DhtKnoten::starten",
+						// Nicht wirklich eine Antwort
+						Prio::Antworten,
 						true,
 					)
 					.await
@@ -186,7 +187,9 @@ impl<A: Addr> DhtKnoten<A> {
 							addr: ziel_addr,
 						},
 						KrpcAnfrage::Ping,
-						"DhtKnoten::routing_tabelle_warten",
+						// Eig. nicht Antworten sondern Protokoll, aber ich glaube nicht das
+						// wir dafür eine eigene Kategorie wollen.
+						Prio::Antworten,
 						true,
 					)
 					.await;
@@ -209,18 +212,12 @@ impl<A: Addr> DhtKnoten<A> {
 		const MAX_UDP_LEN: usize = 2048;
 		let mut puffer = [0u8; MAX_UDP_LEN + 1];
 		loop {
-			self
-				.tempomat
-				.warten_runter("DhtKnoten::nachricht_empfangen")
-				.await;
 			let (udp_len, quell_addr_enum) =
 				self.udp.recv_from(&mut puffer[..]).await?;
 			let quell_addr = A::aus_socket_addr(quell_addr_enum).unwrap(); // TODO Wirklich unmöglich?
+			self.tempomat.melden_runter(udp_len);
 			if udp_len > MAX_UDP_LEN {
 				log::warn!("UDP Paket zu groß ({udp_len} > {MAX_UDP_LEN})");
-				self
-					.tempomat
-					.melden_runter("fehlerhafte UDP Pakete", udp_len);
 				continue;
 			}
 			let nachricht_bytes = &puffer[..udp_len];
@@ -239,18 +236,13 @@ impl<A: Addr> DhtKnoten<A> {
 						log::debug!(
 							"Konnte UDP Paket von {quell_addr} nicht deserialisieren: {e}"
 						);
-						self
-							.tempomat
-							.melden_runter("fehlerhafte UDP Pakete", udp_len);
 						continue;
 					}
 				};
 
 			if matches!(nachricht.inhalt, KrpcInhalt::Anfrage { .. }) {
 				log::trace!("RX REQ {quell_addr}");
-				self
-					.anfrage_verarbeiten(nachricht, udp_len, quell_addr)
-					.await;
+				self.anfrage_verarbeiten(nachricht, quell_addr).await;
 			} else {
 				let anfrage_info = if let Some(i) = self
 					.ausstehende_anfragen
@@ -258,16 +250,12 @@ impl<A: Addr> DhtKnoten<A> {
 					.unwrap()
 					.nehmen_bytes(&nachricht.transaktionsnummer)
 				{
-					self.tempomat.melden_runter(i.aufgabenbereich, udp_len);
 					i
 				} else {
 					log::debug!(
 						"Antwort mit ungültiger Transaktionsnummer: {:02X?} von {quell_addr}",
 						nachricht.transaktionsnummer
 					);
-					self
-						.tempomat
-						.melden_runter("fehlerhafte UDP Pakete", udp_len);
 					continue;
 				};
 
@@ -317,7 +305,6 @@ impl<A: Addr> DhtKnoten<A> {
 	async fn anfrage_verarbeiten(
 		&self,
 		nachricht: KrpcNachricht<A>,
-		udp_len: usize,
 		quell_addr: A,
 	) {
 		let (req_id, anf) = match nachricht.inhalt {
@@ -326,9 +313,6 @@ impl<A: Addr> DhtKnoten<A> {
 				"`anfrage_verarbeiten` darf nur mit einer Anfrage als `nachricht` aufgerufen werden."
 			),
 		};
-		self
-			.tempomat
-			.melden_runter("DhtKnoten::anfrage_verarbeiten", udp_len);
 
 		if !quell_addr.global_valide() {
 			log::debug!("Paket von ungültiger Addresse: {quell_addr}");
@@ -383,22 +367,12 @@ impl<A: Addr> DhtKnoten<A> {
 					.unwrap()
 					.anfrage_erhalten(req_id, quell_addr.clone());
 				self
-					.antwort_senden(
-						&quell_addr,
-						&nachricht.transaktionsnummer,
-						msg,
-						"Antworten auf eingehende Anfragen",
-					)
+					.antwort_senden(&quell_addr, &nachricht.transaktionsnummer, msg)
 					.await
 			}
 			Err(e) => {
 				self
-					.fehler_senden(
-						quell_addr,
-						&nachricht.transaktionsnummer,
-						e,
-						"Antworten auf eingehende Anfragen",
-					)
+					.fehler_senden(quell_addr, &nachricht.transaktionsnummer, e)
 					.await
 			}
 		};
@@ -616,17 +590,14 @@ impl<A: Addr> DhtKnoten<A> {
 		&self,
 		nachricht: &KrpcNachricht<A>,
 		ziel: &A,
-		aufgabenbereich: &'static str,
+		priorität: Prio,
 	) -> Result<usize, Fehler> {
 		let datagramm = nachricht.to_bencode()?;
 		if datagramm.len() > MAX_KRPC_LEN {
 			return Err(Fehler::GesendeteNachrichtZuLang(datagramm.len()));
 		}
 
-		self
-			.tempomat
-			.warten_hoch(aufgabenbereich, datagramm.len())
-			.await;
+		self.tempomat.warten_hoch(priorität, datagramm.len()).await;
 
 		let anz_geschrieben = self
 			.udp
@@ -648,7 +619,6 @@ impl<A: Addr> DhtKnoten<A> {
 		ziel: &A,
 		tx_nummer: &'a [u8],
 		aw: KrpcAntwort,
-		aufgabenbereich: &'static str,
 	) -> Result<(), Fehler> {
 		let m = &aw.methode();
 		log::trace!("TX AW  {m} {ziel}");
@@ -662,7 +632,7 @@ impl<A: Addr> DhtKnoten<A> {
 			},
 		};
 
-		self.nachricht_abschicken(&n, ziel, aufgabenbereich).await?;
+		self.nachricht_abschicken(&n, ziel, Prio::Antworten).await?;
 		counter!("ausgehende Antworten").increment(1);
 		Ok(())
 	}
@@ -672,7 +642,6 @@ impl<A: Addr> DhtKnoten<A> {
 		ziel: A,
 		tx_nummer: &'a [u8],
 		krpc_fehler: KrpcFehler,
-		aufgabenbereich: &'static str,
 	) -> Result<(), Fehler> {
 		let txt = &krpc_fehler.fehlermeldung;
 		log::trace!("TX ERR {ziel} {txt}");
@@ -683,7 +652,7 @@ impl<A: Addr> DhtKnoten<A> {
 		};
 
 		self
-			.nachricht_abschicken(&n, &ziel, aufgabenbereich)
+			.nachricht_abschicken(&n, &ziel, Prio::Antworten)
 			.await?;
 
 		counter!("ausgehende Fehler").increment(1);
@@ -694,7 +663,7 @@ impl<A: Addr> DhtKnoten<A> {
 		&self,
 		ziel: KnotenInfo<A>,
 		anf: KrpcAnfrage,
-		aufgabenbereich: &'static str,
+		priorität: Prio,
 		bei_fehler_knoten_entfernen: bool,
 	) -> Result<oneshot::Receiver<Anfrageergebnis>, Fehler> {
 		let anf_methode = anf.methode();
@@ -704,7 +673,6 @@ impl<A: Addr> DhtKnoten<A> {
 			methode: anf.methode(),
 			knoten_id: ziel.id,
 			zeitgrenze: Instant::now() + self.anfragen_zeitgrenze,
-			aufgabenbereich,
 			bei_fehler_knoten_entfernen,
 			sender: aw_sender,
 		};
@@ -721,10 +689,8 @@ impl<A: Addr> DhtKnoten<A> {
 			}
 		};
 
-		let tx_nummer_u16: u16 = tx_nummer.try_into().unwrap();
-
 		let n = KrpcNachricht {
-			transaktionsnummer: tx_nummer_u16.to_be_bytes().as_slice().to_vec(),
+			transaktionsnummer: tx_nummer.to_vec(),
 			versionscode: VERSIONSCODE.map(|v| v.to_vec()),
 			inhalt: KrpcInhalt::Anfrage {
 				id: self.routing_tabelle.read().unwrap().eigene_id,
@@ -735,9 +701,9 @@ impl<A: Addr> DhtKnoten<A> {
 		let ziel_addr = &ziel.addr;
 		counter!("ausgehende Anfragen").increment(1);
 		log::trace!("TX REQ {anf_methode} {ziel_addr}");
-		self
-			.nachricht_abschicken(&n, &ziel.addr, aufgabenbereich)
-			.await?;
+		// Da eine Antwort kommen wird müssen wir ggf. auch für Runter warten.
+		self.tempomat.warten_runter(priorität, 0).await;
+		self.nachricht_abschicken(&n, &ziel.addr, priorität).await?;
 		Ok(aw_empf)
 	}
 
@@ -752,6 +718,7 @@ impl<A: Addr> DhtKnoten<A> {
 		&self,
 		ziel: U160,
 		sender: smol::channel::Sender<KnotenInfo<A>>,
+		priorität: Prio,
 	) -> Vec<KnotenInfo<A>> {
 		let mut knoten: Vec<KnotenInfo<A>> = Vec::new();
 		{
@@ -775,14 +742,13 @@ impl<A: Addr> DhtKnoten<A> {
 
 		let mut beste_entfernung = U160([255; 20]);
 
-		log::trace!("B: {}\nN:{}", beste_entfernung, knoten[0].id ^ ziel);
 		while beste_entfernung > knoten[0].id ^ ziel {
 			if knoten.is_empty() {
 				return knoten;
 			}
 			let anf = KrpcAnfrage::FindNode { ziel, will: None };
 			let r1 = self
-				.anfrage_senden(knoten[0].clone(), anf, "knoten_iterativ_suchen", true)
+				.anfrage_senden(knoten[0].clone(), anf, priorität, true)
 				.await;
 
 			let r2 = match r1 {

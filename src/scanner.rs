@@ -9,6 +9,7 @@ use smol::{Timer, channel::*, stream::Stream};
 
 use crate::addr_generisch::Addr;
 use crate::dht_knoten::Anfrageergebnis;
+use crate::tempomat::Prio;
 use crate::{
 	Fehler,
 	datentypen::{KnotenInfo, U160},
@@ -107,12 +108,9 @@ impl<A: Addr> Scanner<A> {
 
 			match self.knoten_rx.try_recv() {
 				Ok(k) => {
-					smol::spawn(async move {
-						if let Err(e) = self_arc2.knoten_scannen(k).await {
-							log::warn!("Fehler beim Scannen: {e}");
-						}
-					})
-					.detach();
+					if let Err(e) = self_arc2.knoten_scannen(k).await {
+						log::warn!("Fehler beim Scannen: {e}");
+					}
 					anfang = false;
 				}
 				Err(_) => {
@@ -168,7 +166,7 @@ impl<A: Addr> Scanner<A> {
 		// blockiert werden wenn die maximale Anzahl an ausstehenden
 		// Anfragen in `DhtKnoten` erreicht ist)
 		let self2 = self.clone();
-		let aw_fut = self.anfrage_senden(knoten, 0, true).await?;
+		let aw_fut = self.anfrage_senden(knoten, true).await?;
 
 		// Aber wir warten nicht auf die Antwort.
 		let fut = async move {
@@ -225,7 +223,6 @@ impl<A: Addr> Scanner<A> {
 	async fn anfrage_senden(
 		self: Arc<Self>,
 		knoten: (U160, SocketAddr),
-		zielnähe_bits: usize,
 		sample_infohashes: bool,
 	) -> Result<
 		impl Future<Output = Result<Anfrageergebnis, oneshot::RecvError>>,
@@ -233,12 +230,12 @@ impl<A: Addr> Scanner<A> {
 	> {
 		let anf = if sample_infohashes {
 			KrpcAnfrage::SampleInfohashes {
-				ziel: knoten.0.n_bits_beibehalten(zielnähe_bits),
+				ziel: U160::zufällig(),
 				will: None,
 			}
 		} else {
 			KrpcAnfrage::FindNode {
-				ziel: knoten.0.n_bits_beibehalten(zielnähe_bits),
+				ziel: U160::zufällig(),
 				will: None,
 			}
 		};
@@ -251,7 +248,7 @@ impl<A: Addr> Scanner<A> {
 					addr: A::aus_socket_addr(knoten.1).unwrap(),
 				},
 				anf,
-				"Scanner",
+				Prio::Scannen,
 				!sample_infohashes,
 			)
 			.await?;
@@ -276,7 +273,7 @@ impl<A: Addr> Scanner<A> {
 		smol::spawn(async move {
 			self3
 				.dht_knoten
-				.knoten_iterativ_suchen(U160::zufällig(), info_tx)
+				.knoten_iterativ_suchen(U160::zufällig(), info_tx, Prio::Scannen)
 				.await
 		})
 		.detach();

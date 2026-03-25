@@ -15,7 +15,6 @@ pub enum Anfrageergebnis {
 pub struct AusstehendeAnfrage {
 	pub zeitgrenze: Instant,
 	pub methode: AnfrageMethode,
-	pub aufgabenbereich: &'static str,
 	pub bei_fehler_knoten_entfernen: bool,
 	pub knoten_id: U160,
 	pub sender: EinzelSender<Anfrageergebnis>,
@@ -40,7 +39,7 @@ impl Anfragenpuffer {
 	}
 
 	/// Entfernt die Anfrage mit der Nummer `idx` und gibt diese zurück falls sie existiert.
-	pub fn nehmen(&mut self, idx: usize) -> Option<AusstehendeAnfrage> {
+	fn nehmen(&mut self, idx: usize) -> Option<AusstehendeAnfrage> {
 		if idx > self.index.len() {
 			return None;
 		}
@@ -80,13 +79,14 @@ impl Anfragenpuffer {
 	pub fn einfügen(
 		&mut self,
 		anfrage: AusstehendeAnfrage,
-	) -> Result<usize, (AusstehendeAnfrage, EventListener)> {
+	) -> Result<[u8; 2], (AusstehendeAnfrage, EventListener)> {
 		if let Some(idx) = self.index.first_zero() {
 			self.index.set(idx, true);
 			assert!(self.anfragen[idx].replace(anfrage).is_none());
 			gauge!("Anfragenpuffer anz_anfragen").set(self.index.count_ones() as f64);
 
-			Ok(idx)
+			let idx_u16: u16 = idx.try_into().unwrap();
+			Ok(idx_u16.to_be_bytes())
 		} else {
 			Err((anfrage, self.anfrage_frei.listen()))
 		}
@@ -111,6 +111,7 @@ impl Anfragenpuffer {
 	}
 }
 
+// TODO Die Iteratorlösung für Zeitüberschreitungen ist verwirrend.
 pub struct ZeitüberschreitungsIter<'a> {
 	anfragen_iter:
 		std::iter::Enumerate<std::slice::IterMut<'a, Option<AusstehendeAnfrage>>>,
