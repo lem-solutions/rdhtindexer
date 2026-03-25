@@ -2,10 +2,10 @@ use crate::addr_generisch::Addr;
 use crate::datentypen::{KnotenInfo, U160};
 use bendy::encoding::ToBencode;
 use smol::Timer;
-use smol::channel::*;
 use smol::io::Error as IoError;
 use smol::net::{SocketAddr, UdpSocket};
 use std::collections::HashSet;
+use std::marker::{Send, Sync};
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
@@ -41,65 +41,38 @@ pub struct InfoHashMitKnoten {
 	pub addr: SocketAddr,
 }
 
-#[derive(Clone)]
-pub struct KnotenKanäle {
-	pub knoten: Sender<(U160, SocketAddr)>,
-	pub info_hash_mit_peer: Sender<(U160, SocketAddr)>,
-	pub info_hash_mit_knoten: Sender<InfoHashMitKnoten>,
-}
-impl KnotenKanäle {
-	pub fn neu(puffergröße: usize) -> (KnotenKanäle, KnotenEmpfänger) {
-		let (knoten_tx, knoten_rx) = bounded(puffergröße);
-		let (info_hash_mit_peer_tx, info_hash_mit_peer_rx) = bounded(puffergröße);
-		let (info_hash_mit_knoten_tx, info_hash_mit_knoten_rx) =
-			bounded(puffergröße);
-
-		(
-			KnotenKanäle {
-				knoten: knoten_tx,
-				info_hash_mit_peer: info_hash_mit_peer_tx,
-				info_hash_mit_knoten: info_hash_mit_knoten_tx,
-			},
-			KnotenEmpfänger {
-				knoten: knoten_rx,
-				info_hash_mit_peer: info_hash_mit_peer_rx,
-				info_hash_mit_knoten: info_hash_mit_knoten_rx,
-			},
-		)
-	}
-}
-
-pub struct KnotenEmpfänger {
-	pub knoten: Receiver<(U160, SocketAddr)>,
-	pub info_hash_mit_peer: Receiver<(U160, SocketAddr)>,
-	pub info_hash_mit_knoten: Receiver<InfoHashMitKnoten>,
-}
-
 pub struct DhtKnoten<A: Addr> {
 	routing_tabelle: RwLock<RoutingTabelle<A>>,
 	peer_tabelle: RwLock<PeerTabelle<A>>,
 	ausstehende_anfragen: RwLock<Anfragenpuffer>,
-	tempomat: Arc<Tempomat>,
 	udp: UdpSocket,
-	kanäle: KnotenKanäle,
 
 	externe_addresse: RwLock<Option<A>>,
 	angebliche_externe_addresse: RwLock<Option<A>>,
 	quellen_für_externe_addresse: RwLock<HashSet<A>>,
+
+	tempomat: Arc<Tempomat>,
+	bei_announce_peer: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
+	bei_get_peers: Box<dyn Fn(InfoHashMitKnoten) + Send + Sync>,
+	bei_eingehender_anfrage: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
 
 	anfragen_zeitgrenze: Duration,
 	gestartet: AtomicBool,
 }
 
 impl<A: Addr> DhtKnoten<A> {
+	// TODO Builder pattern o.Ä.
 	pub async fn neu(
 		addr: A,
 		tempomat: Arc<Tempomat>,
-		kanäle: KnotenKanäle,
 		max_ausstehende_anfragen: usize,
 		anfragen_zeitgrenze: Duration,
 		max_peer_tabellen_größe: usize,
 		max_peer_tabellen_alter: Duration,
+		// die Funktionen dürfen nicht Blocken
+		bei_announce_peer: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
+		bei_get_peers: Box<dyn Fn(InfoHashMitKnoten) + Send + Sync>,
+		bei_eingehender_anfrage: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
 	) -> Result<Self, IoError> {
 		Ok(DhtKnoten {
 			// Die IP Addresse ist wahrscheinlich nicht die externe, deswegen
@@ -123,7 +96,6 @@ impl<A: Addr> DhtKnoten<A> {
 			)),
 			udp: UdpSocket::bind(addr).await?,
 			tempomat,
-			kanäle,
 			ausstehende_anfragen: RwLock::new(Anfragenpuffer::neu(
 				max_ausstehende_anfragen,
 			)),
@@ -132,6 +104,9 @@ impl<A: Addr> DhtKnoten<A> {
 			quellen_für_externe_addresse: RwLock::new(HashSet::new()),
 			externe_addresse: RwLock::new(None),
 			gestartet: false.into(),
+			bei_announce_peer,
+			bei_get_peers,
+			bei_eingehender_anfrage,
 		})
 	}
 
@@ -355,14 +330,7 @@ impl<A: Addr> DhtKnoten<A> {
 			return;
 		}
 
-		if self
-			.kanäle
-			.knoten
-			.try_send((req_id, quell_addr.clone().into()))
-			.is_err()
-		{
-			log::warn!("kanäle.knoten voll!");
-		}
+		(self.bei_eingehender_anfrage)((req_id, quell_addr.clone().into()));
 
 		let aw = match anf {
 			KrpcAnfrage::Ping => Ok(KrpcAntwort::Ping),
@@ -487,14 +455,7 @@ impl<A: Addr> DhtKnoten<A> {
 			a
 		};
 
-		if self
-			.kanäle
-			.info_hash_mit_peer
-			.try_send((info_hash, peer_addr.clone().into()))
-			.is_err()
-		{
-			log::warn!("kanäle.kanäle.info_hash_mit_peer voll!");
-		}
+		(self.bei_announce_peer)((info_hash, peer_addr.clone().into()));
 
 		self
 			.peer_tabelle
@@ -512,18 +473,11 @@ impl<A: Addr> DhtKnoten<A> {
 		quell_addr: &A,
 		req_id: U160,
 	) -> Result<KrpcAntwort, KrpcFehler> {
-		if self
-			.kanäle
-			.info_hash_mit_knoten
-			.try_send(InfoHashMitKnoten {
-				info_hash,
-				knoten_id: req_id,
-				addr: quell_addr.clone().into(),
-			})
-			.is_err()
-		{
-			log::warn!("kanäle.info_hash_mit_knoten voll!");
-		}
+		(self.bei_get_peers)(InfoHashMitKnoten {
+			info_hash,
+			knoten_id: req_id,
+			addr: quell_addr.clone().into(),
+		});
 
 		let mut peer_tabelle = self.peer_tabelle.write().unwrap();
 		let peer_iter = peer_tabelle.peers_für_hash(&info_hash);
@@ -890,6 +844,7 @@ impl<A: Addr> DhtKnoten<A> {
 
 		let len = knoten.len();
 		log::debug!("knoten_iterativ_suchen: {len} Treffer.");
+
 		knoten
 	}
 }
