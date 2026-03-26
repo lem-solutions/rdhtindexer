@@ -202,11 +202,9 @@ impl<T> RoutingTabelle<T> {
 	pub fn nächste_k_knoten<'a>(
 		&'a self,
 		ziel: U160,
-		puffer: &mut noalloc_vec_rs::vec::Vec<(U160, &'a T), K>,
-	) {
-		puffer.clear();
+	) -> noalloc_vec_rs::vec::Vec<(U160, &'a T), K> {
+		let mut puffer = noalloc_vec_rs::vec::Vec::new();
 
-		// OPTIMIEREN
 		for knoten in self.iter_gute_knoten() {
 			let mut idx = 0;
 			for (i, (k_id, _k_addr)) in puffer.iter().enumerate() {
@@ -223,6 +221,8 @@ impl<T> RoutingTabelle<T> {
 				puffer.insert(idx, (knoten.id, &knoten.addr)).unwrap();
 			}
 		}
+
+		puffer
 	}
 
 	fn bucket_für_id(&self, id: U160) -> &Bucket<T> {

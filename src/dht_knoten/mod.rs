@@ -494,8 +494,7 @@ impl<A: Addr> DhtKnoten<A> {
 		will: Will,
 	) -> Result<KrpcAntwort, KrpcFehler> {
 		let rt_b = self.routing_tabelle.read().unwrap();
-		let mut puffer = noalloc_vec_rs::vec::Vec::new();
-		rt_b.nächste_k_knoten(ziel, &mut puffer);
+		let puffer = rt_b.nächste_k_knoten(ziel);
 
 		let knoten_v4 = if A::IST_IPV4 && will.v4() {
 			Some(
@@ -670,8 +669,7 @@ impl<A: Addr> DhtKnoten<A> {
 		{
 			let rt_g = self.routing_tabelle.read().unwrap();
 			{
-				let mut knoten_minivec = noalloc_vec_rs::vec::Vec::new();
-				rt_g.nächste_k_knoten(ziel, &mut knoten_minivec);
+				let knoten_minivec = rt_g.nächste_k_knoten(ziel);
 
 				for (id, addr) in knoten_minivec.iter() {
 					knoten.push(KnotenInfo {
