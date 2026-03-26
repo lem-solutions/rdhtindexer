@@ -684,27 +684,16 @@ impl<A: Addr> DhtKnoten<A> {
 		bei_fehler_knoten_entfernen: bool,
 	) -> Result<oneshot::Receiver<Anfrageergebnis>, Fehler> {
 		let anf_methode = anf.methode();
-
 		let (aw_sender, aw_empf) = oneshot::channel();
-		let mut anfrage = AusstehendeAnfrage {
-			methode: anf.methode(),
-			knoten_id: ziel.id,
-			zeitgrenze: Instant::now() + self.anfragen_zeitgrenze,
+		let tx_nummer = Anfragenpuffer::einfügen(
+			|| self.ausstehende_anfragen.write().unwrap(),
+			anf_methode.clone(),
+			ziel.id,
+			self.anfragen_zeitgrenze,
 			bei_fehler_knoten_entfernen,
-			sender: aw_sender,
-		};
-
-		let tx_nummer = loop {
-			anfrage.zeitgrenze = Instant::now() + self.anfragen_zeitgrenze;
-			let res = self.ausstehende_anfragen.write().unwrap().einfügen(anfrage);
-			match res {
-				Ok(txn) => break txn,
-				Err((anf, warter)) => {
-					anfrage = anf;
-					warter.await;
-				}
-			}
-		};
+			aw_sender,
+		)
+		.await;
 
 		let n = KrpcNachricht {
 			transaktionsnummer: tx_nummer.to_vec(),

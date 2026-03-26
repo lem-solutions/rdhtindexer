@@ -1,3 +1,5 @@
+use std::ops::DerefMut;
+
 use super::*;
 use bitvec::prelude::*;
 use event_listener::{Event, EventListener};
@@ -72,11 +74,47 @@ impl Anfragenpuffer {
 			.map(|anf| anf.methode.clone())
 	}
 
+	/// Trägt die ausstehende Anfrage in den Anfragenpuffer ein. Sollte die
+	/// maximale Anzahl Anfragen erreicht sein, wird gewartet bis ein Platz frei
+	/// ist.
+	///
+	/// Die `zugriffsfunktion` ermöglicht `einfügen_warten` Schreibzugriff auf
+	/// den `Anfragenpuffer` ohne das ein `&mut Self` über `.await`-Punkte hinweg
+	/// gehalten werden muss.
+	pub async fn einfügen<R: DerefMut<Target = Self>, F: Fn() -> R>(
+		zugriffsfunktion: F,
+		methode: AnfrageMethode,
+		knoten_id: U160,
+		anfragen_zeitgrenze: Duration,
+		bei_fehler_knoten_entfernen: bool,
+		aw_sender: EinzelSender<Anfrageergebnis>,
+	) -> [u8; 2] {
+		let mut anfrage = AusstehendeAnfrage {
+			methode,
+			knoten_id,
+			zeitgrenze: Instant::now() + anfragen_zeitgrenze,
+			bei_fehler_knoten_entfernen,
+			sender: aw_sender,
+		};
+
+		loop {
+			anfrage.zeitgrenze = Instant::now() + anfragen_zeitgrenze;
+			let res = zugriffsfunktion().einfügen_versuchen(anfrage);
+			match res {
+				Ok(txn) => return txn,
+				Err((anf, warter)) => {
+					anfrage = anf;
+					warter.await;
+				}
+			}
+		}
+	}
+
 	/// Fügt eine Neue Anfrage in den Puffer ein und gibt die zugewiesene ID zurück.
 	/// Solle die maximale Anzahl an einträgen im Puffer erreicht sein wird die Anfrage
 	/// und ein `EventListener` als `Err(_)` zurückgegeben. Wenn der `EventListener`
 	/// Ein Ereignis empfängt sollte das Einfügen der Anfrage erneut versucht werden.
-	pub fn einfügen(
+	fn einfügen_versuchen(
 		&mut self,
 		anfrage: AusstehendeAnfrage,
 	) -> Result<[u8; 2], (AusstehendeAnfrage, EventListener)> {
