@@ -5,7 +5,6 @@ use metrics::*;
 use smol::Timer;
 use smol::io::Error as IoError;
 use smol::net::{SocketAddr, UdpSocket};
-use std::collections::HashSet;
 use std::marker::{Send, Sync};
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -31,9 +30,6 @@ const VERSIONSCODE: Option<&'static [u8]> = None;
 // https://bittorrent.org/beps/bep_0032.html
 const MAX_KRPC_LEN: usize = 1024;
 
-// TODO
-const ANZ_MELDUNGEN_IPWECHSEL: usize = 10;
-
 const BEP51_INTERVAL_SEK: u16 = 300;
 
 pub struct InfoHashMitKnoten {
@@ -53,10 +49,6 @@ pub struct DhtKnoten<A: Addr> {
 	peer_tabelle: RwLock<PeerTabelle<A>>,
 	ausstehende_anfragen: RwLock<Anfragenpuffer>,
 	udp: UdpSocket,
-
-	externe_addresse: RwLock<Option<A>>,
-	angebliche_externe_addresse: RwLock<Option<A>>,
-	quellen_für_externe_addresse: RwLock<HashSet<A>>,
 
 	tempomat: Arc<Tempomat>,
 	bei_announce_peer: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
@@ -82,11 +74,7 @@ impl<A: Addr> DhtKnoten<A> {
 		bei_eingehender_nachricht: Box<dyn Fn((U160, SocketAddr)) + Send + Sync>,
 	) -> Result<Self, IoError> {
 		Ok(DhtKnoten {
-			// Die IP Addresse ist wahrscheinlich nicht die externe, deswegen
-			// wird die routing Tabelle wahrscheinlich schnell neu erstellt
-			routing_tabelle: RwLock::new(RoutingTabelle::neu(
-				U160::bep42_generieren(&addr.ip()),
-			)),
+			routing_tabelle: RwLock::new(RoutingTabelle::neu()),
 			// max_peers_pro_torrent: wir brauchen nur so viele wie in ein Paket passen.
 			//                        16 ist definitiv genug und sollte problemlos passen.
 
@@ -107,9 +95,6 @@ impl<A: Addr> DhtKnoten<A> {
 				max_ausstehende_anfragen,
 			)),
 			anfragen_zeitgrenze,
-			angebliche_externe_addresse: RwLock::new(None),
-			quellen_für_externe_addresse: RwLock::new(HashSet::new()),
-			externe_addresse: RwLock::new(None),
 			gestartet: false.into(),
 			bei_announce_peer,
 			bei_get_peers,
@@ -277,7 +262,7 @@ impl<A: Addr> DhtKnoten<A> {
 				};
 
 				let erg = match nachricht.inhalt {
-					KrpcInhalt::Antwort { id, ext_ip, aw } => {
+					KrpcInhalt::Antwort { id, ext_ip: _, aw } => {
 						let methode = aw.methode();
 						log::trace!("RX AW  {methode} {quell_addr} ");
 						self
@@ -285,7 +270,6 @@ impl<A: Addr> DhtKnoten<A> {
 							.write()
 							.unwrap()
 							.antwort_erhalten(id, quell_addr.clone());
-						self.externe_addr_prüfen(ext_ip);
 						(self.bei_eingehender_nachricht)((id, quell_addr.into()));
 						histogram!("Antwortlatenz").record(
 							(anfrage_info.zeitgrenze - self.anfragen_zeitgrenze)
@@ -557,50 +541,6 @@ impl<A: Addr> DhtKnoten<A> {
 		will: Will,
 	) -> Result<KrpcAntwort, KrpcFehler> {
 		self.nächste_knoten(ziel, will)
-	}
-
-	fn externe_addr_prüfen(&self, addr_opt: Option<A>) {
-		if addr_opt.is_none() {
-			return;
-		}
-		let addr = addr_opt.unwrap();
-
-		if !addr.global_valide() {
-			log::debug!("Invalide externe Addresse erhalten: {addr}");
-			return;
-		}
-
-		let ext_addr = self.externe_addresse.read().unwrap();
-		if ext_addr.is_none() {
-			log::info!("Externe Addresse:  {addr}");
-		} else {
-			return;
-			// TODO Addressenwechsel möglich machen wenn verschiedene Knoten uns
-			//      die gleiche neue Addresse Mitteilen
-			log::info!(
-				"Neue externe Addresse: {} → {addr}",
-				ext_addr.as_ref().unwrap()
-			);
-		}
-		std::mem::drop(ext_addr);
-
-		self.externe_addr_ändern(addr);
-	}
-
-	fn externe_addr_ändern(&self, neue_addr: A) {
-		let mut routing_tabelle = self.routing_tabelle.write().unwrap();
-
-		let mut alte_tabelle =
-			RoutingTabelle::neu(U160::bep42_generieren(&neue_addr.ip()));
-		std::mem::swap(&mut *routing_tabelle, &mut alte_tabelle);
-
-		*self.externe_addresse.write().unwrap() = Some(neue_addr);
-		*self.angebliche_externe_addresse.write().unwrap() = None;
-		self.quellen_für_externe_addresse.write().unwrap().clear();
-
-		for knoten_info in alte_tabelle.knoten_extrahieren() {
-			routing_tabelle.knoten_info_einfügen(knoten_info);
-		}
 	}
 
 	async fn nachricht_abschicken<'a>(

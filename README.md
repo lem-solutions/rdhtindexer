@@ -16,7 +16,6 @@ Indexer/Crawler für das Bittorrent DHT-Netzwerk. Unfertig und noch nicht Einsat
 - [BEP 32: BitTorrent DHT Extensions for IPv6](https://bittorrent.org/beps/bep_0032.html)
 	- Unterstützung für Hybridlisten nicht implementiert.
 - [BEP 42: DHT Security Extension](https://bittorrent.org/beps/bep_0042.html)
-	- Für uns ist es unnötig unsere Knoten ID anzupassen, da wir keine announce_peer Pakete verschicken
 - [BEP 51: DHT Infohash Indexing](https://bittorrent.org/beps/bep_0051.html)
 
 ### Nicht implementiert

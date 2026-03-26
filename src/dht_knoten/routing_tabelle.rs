@@ -136,10 +136,10 @@ pub struct RoutingTabelle<T> {
 	pub eigene_id: U160,
 }
 impl<T> RoutingTabelle<T> {
-	pub fn neu(id: U160) -> Self {
+	pub fn neu() -> Self {
 		RoutingTabelle {
 			buckets: vec![Bucket::default()],
-			eigene_id: id,
+			eigene_id: U160::zufällig(),
 		}
 	}
 
