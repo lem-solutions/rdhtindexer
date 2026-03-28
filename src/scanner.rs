@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use bloomfilter::Bloom;
-use metrics::gauge;
+use metrics::*;
 use smol::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use smol::{Timer, channel::*, stream::Stream};
 
@@ -214,8 +214,20 @@ impl<A: Addr> Scanner<A> {
 					knoten_v4,
 					knoten_v6,
 					info_hashes,
+					interval_sek,
+					anz_infohashes,
 					..
 				} => {
+					if let Some(x) = anz_infohashes {
+						histogram!("sample_infohashes anz_infohashes").record(x as f64);
+					} else {
+						counter!("smaple_infohashes anz_infohashes None").increment(1);
+					}
+					if let Some(x) = interval_sek {
+						histogram!("sample_infohashes interval_sek").record(x as f64);
+					} else {
+						counter!("smaple_infohashes interval_sek None").increment(1);
+					}
 					self
 						.info_hash_tx
 						.send(InfoHashesMitKnoten {
