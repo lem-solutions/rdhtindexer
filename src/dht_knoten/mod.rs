@@ -1,5 +1,6 @@
 use crate::addr_generisch::Addr;
 use crate::datentypen::{KnotenInfo, U160};
+use bendy::decoding::Error as DeErr;
 use bendy::encoding::ToBencode;
 use metrics::*;
 use smol::Timer;
@@ -29,6 +30,9 @@ const VERSIONSCODE: Option<&'static [u8]> = None;
 
 // https://bittorrent.org/beps/bep_0032.html
 const MAX_KRPC_LEN: usize = 1024;
+
+// Puffergröße für eingehende Pakete.
+const MAX_UDP_LEN: usize = 2048;
 
 const BEP51_INTERVAL_SEK: u16 = 300;
 
@@ -123,24 +127,25 @@ impl<A: Addr> DhtKnoten<A> {
 
 		for knoten_addr in bootstrap_knoten {
 			let self_arc5 = self.clone();
-			smol::spawn(async move {
-				let id = self_arc5.routing_tabelle.read().unwrap().eigene_id;
-				self_arc5
-					.anfrage_senden(
-						KnotenInfo {
-							id,
-							addr: knoten_addr.clone(),
-						},
-						KrpcAnfrage::Ping,
-						// Nicht wirklich eine Antwort
-						Prio::Antworten,
-						true,
-					)
-					.await
-					.unwrap();
-			})
-			.detach();
+			smol::spawn(self_arc5.bootstrap_ping(knoten_addr)).detach();
 		}
+	}
+
+	async fn bootstrap_ping(self: Arc<Self>, knoten_addr: A) {
+		let id = self.routing_tabelle.read().unwrap().eigene_id;
+		self
+			.anfrage_senden(
+				KnotenInfo {
+					id,
+					addr: knoten_addr.clone(),
+				},
+				KrpcAnfrage::Ping,
+				// Nicht wirklich eine Antwort
+				Prio::Antworten,
+				true,
+			)
+			.await
+			.unwrap();
 	}
 
 	async fn anfragenpuffer_warten(self: Arc<Self>) -> Fehler {
@@ -160,7 +165,7 @@ impl<A: Addr> DhtKnoten<A> {
 		}
 	}
 
-	async fn routing_tabelle_warten(self: Arc<Self>) -> Fehler {
+	async fn routing_tabelle_warten(self: Arc<Self>) -> Result<(), Fehler> {
 		loop {
 			let k_info_opt = self
 				.routing_tabelle
@@ -169,29 +174,7 @@ impl<A: Addr> DhtKnoten<A> {
 				.fragwürdigen_knoten_finden()
 				.cloned();
 			if let Some(k_info) = k_info_opt {
-				let ziel_id = k_info.id.clone();
-				let ziel_addr = k_info.addr.clone();
-				let req_res = self
-					.anfrage_senden(
-						KnotenInfo {
-							id: ziel_id,
-							addr: ziel_addr,
-						},
-						KrpcAnfrage::Ping,
-						// Eig. nicht Antworten sondern Protokoll, aber ich glaube nicht das
-						// wir dafür eine eigene Kategorie wollen.
-						Prio::Antworten,
-						true,
-					)
-					.await;
-				match req_res {
-					Ok(rx) => {
-						if let Err(f) = rx.await {
-							return f.into();
-						}
-					}
-					Err(f) => return f,
-				}
+				self.fragwürdigen_knoten_testen(k_info).await?;
 			} else {
 				// wenn es gerade keine fragwürdigen Knoten gibt warten wir einfach einwenig.
 				smol::Timer::after(ROUTING_TABELLE_ZEITFENSTER / 2).await;
@@ -199,8 +182,36 @@ impl<A: Addr> DhtKnoten<A> {
 		}
 	}
 
+	async fn fragwürdigen_knoten_testen(
+		&self,
+		k_info: routing_tabelle::KnotenInfo<A>,
+	) -> Result<(), Fehler> {
+		let ziel_id = k_info.id.clone();
+		let ziel_addr = k_info.addr.clone();
+
+		// Der Inhalt der Antwort interessiert uns nicht wirklich. Es ist nur
+		// wichtig dass der Knoten gewantwortet hat. Die Routingdabelle wird
+		// (wie bei jeder anderen Anfrage auch) automatisch über Erfolg oder
+		// Miserfolg informiert, also müssen wir uns hier nicht weiter drum kümmern.
+		self
+			.anfrage_senden(
+				KnotenInfo {
+					id: ziel_id,
+					addr: ziel_addr,
+				},
+				KrpcAnfrage::Ping,
+				// Eig. nicht Antworten sondern Protokoll, aber ich glaube nicht das
+				// wir dafür eine eigene Kategorie wollen.
+				Prio::Antworten,
+				true,
+			)
+			.await?
+			.await?;
+
+		Ok(())
+	}
+
 	async fn nachrichten_empfangen(self: Arc<Self>) -> Result<(), Fehler> {
-		const MAX_UDP_LEN: usize = 2048;
 		let mut puffer = [0u8; MAX_UDP_LEN + 1];
 		loop {
 			let (udp_len, quell_addr_enum) =
@@ -210,115 +221,159 @@ impl<A: Addr> DhtKnoten<A> {
 			let quell_addr = A::aus_socket_addr(quell_addr_enum).unwrap();
 
 			self.tempomat.melden_runter(udp_len);
-
-			// Es gibt nichts das es nicht gibt, heißt aber nicht das es nicht Müll
-			// ist ;)
-			if quell_addr.port() == 0 {
-				log::debug!("Paket von Port 0: {quell_addr} {:x?}", &puffer[..udp_len]);
-				continue;
-			}
-
-			if udp_len > MAX_UDP_LEN {
-				log::warn!("UDP Paket zu groß ({udp_len} > {MAX_UDP_LEN})");
-				continue;
-			}
-			let nachricht_bytes = &puffer[..udp_len];
-
-			let nachricht: KrpcNachricht<A> =
-				match KrpcNachricht::einlesen(nachricht_bytes, |txid_bytes| {
-					let txid = u16::from_be_bytes(txid_bytes.try_into().ok()?);
-					self
-						.ausstehende_anfragen
-						.read()
-						.unwrap()
-						.methode_für_txid(txid as usize)
-				}) {
-					Ok(n) => n,
-					Err(e) => {
-						log::debug!(
-							"Konnte UDP Paket von {quell_addr} nicht deserialisieren: {e}"
-						);
-						continue;
-					}
-				};
-
-			if matches!(nachricht.inhalt, KrpcInhalt::Anfrage { .. }) {
-				log::trace!("RX REQ {quell_addr}");
-				self.anfrage_verarbeiten(nachricht, quell_addr).await;
-			} else {
-				let anfrage_info = if let Some(i) = self
-					.ausstehende_anfragen
-					.write()
-					.unwrap()
-					.nehmen_bytes(&nachricht.transaktionsnummer)
-				{
-					i
-				} else {
-					log::debug!(
-						"Antwort mit ungültiger Transaktionsnummer: {:02X?} von {quell_addr}",
-						nachricht.transaktionsnummer
-					);
-					continue;
-				};
-
-				let erg = match nachricht.inhalt {
-					KrpcInhalt::Antwort { id, ext_ip: _, aw } => {
-						let methode = aw.methode();
-						log::trace!("RX AW  {methode} {quell_addr} ");
-						self
-							.routing_tabelle
-							.write()
-							.unwrap()
-							.antwort_erhalten(id, quell_addr.clone());
-						(self.bei_eingehender_nachricht)((id, quell_addr.into()));
-						histogram!("Antwortlatenz").record(
-							(anfrage_info.zeitgrenze - self.anfragen_zeitgrenze)
-								.elapsed()
-								.as_millis() as f64,
-						);
-
-						Anfrageergebnis::Ok(aw)
-					}
-					KrpcInhalt::Fehler(f) => {
-						let txt = &f.fehlermeldung;
-						log::trace!("RX ERR {quell_addr} {txt}");
-						if anfrage_info.bei_fehler_knoten_entfernen {
-							self
-								.routing_tabelle
-								.write()
-								.unwrap()
-								.fehlschlag(anfrage_info.knoten_id);
-						}
-						Anfrageergebnis::Fehler(f)
-					}
-					KrpcInhalt::Anfrage { .. } => unreachable!(),
-				};
-				// Ein Fehler beim Senden bedeutet das der Empfänger
-				// nicht mehr existiert. In unserem Fall ist das nicht unbedingt ein
-				// Fehler, falls wir uns nicht für die Antwort auf eine Anfrage
-				// interessieren.
-				#[allow(unused_must_use)]
-				anfrage_info.sender.send(erg);
+			if let Err(e) =
+				self.paket_verarbeiten(quell_addr, &puffer[..udp_len]).await
+			{
+				log::debug!("{e}");
 			}
 		}
 	}
 
+	/// Verarbeitet ein eingehende UDP-Paket.
+	///
+	/// Da das eingehende Paket ungültig sein könnte sollten Fehler ignoriert
+	/// werden.
+	async fn paket_verarbeiten(
+		&self,
+		quell_addr: A,
+		nachricht_bytes: &[u8],
+	) -> Result<(), Fehler> {
+		// Es gibt nichts das es nicht gibt, heißt aber nicht das es nicht Müll
+		// ist ;)
+		if quell_addr.port() == 0 {
+			log::debug!("Paket von Port 0: {quell_addr} {:x?}", nachricht_bytes);
+			return Err(Fehler::PaketVonPort0);
+		}
+
+		// Das UDP Paket könnte unvollständig sein, da wir nur MAX_UDP_LEN+1 Puffer
+		// zur verfügung stellen, also ignorieren.
+		if nachricht_bytes.len() > MAX_UDP_LEN {
+			log::warn!(
+				"UDP Paket zu groß ({} > {MAX_UDP_LEN})",
+				nachricht_bytes.len()
+			);
+			return Err(Fehler::PaketZuGroß);
+		}
+
+		let nachricht = self.nachricht_deserialisieren(nachricht_bytes)?;
+		let txnr = nachricht.transaktionsnummer.as_slice();
+
+		match nachricht.inhalt {
+			KrpcInhalt::Antwort { id, ext_ip: _, aw } => {
+				self.antwort_verarbeiten(quell_addr, txnr, id, aw)
+			}
+
+			KrpcInhalt::Fehler(krpc_fehler) => {
+				self.aw_fehler_verarbeiten(quell_addr, txnr, krpc_fehler)
+			}
+
+			KrpcInhalt::Anfrage { id, anf } => {
+				self.anfrage_verarbeiten(quell_addr, txnr, id, anf).await
+			}
+		}
+	}
+
+	fn antwort_verarbeiten(
+		&self,
+		quell_addr: A,
+		txnr: &[u8],
+		aw_id: U160,
+		aw: KrpcAntwort,
+	) -> Result<(), Fehler> {
+		let methode = aw.methode();
+		log::trace!("RX AW  {methode} {quell_addr} ");
+
+		let anfrage_info = self
+			.ausstehende_anfragen
+			.write()
+			.unwrap()
+			.nehmen_bytes(txnr)
+			.ok_or(Fehler::UnbekannteTransaktionsnummer)?;
+
+		self
+			.routing_tabelle
+			.write()
+			.unwrap()
+			.antwort_erhalten(aw_id, quell_addr.clone());
+
+		histogram!("Antwortlatenz").record(
+			(anfrage_info.zeitgrenze - self.anfragen_zeitgrenze)
+				.elapsed()
+				.as_millis() as f64,
+		);
+
+		(self.bei_eingehender_nachricht)((aw_id, quell_addr.into()));
+
+		// Ein Fehler beim Senden bedeutet das der Empfänger
+		// nicht mehr existiert. In unserem Fall ist das nicht unbedingt ein
+		// Fehler, falls wir uns nicht für die Antwort auf eine Anfrage
+		// interessieren.
+		#[allow(unused_must_use)]
+		anfrage_info.sender.send(Anfrageergebnis::Ok(aw));
+		Ok(())
+	}
+
+	fn aw_fehler_verarbeiten(
+		&self,
+		quell_addr: A,
+		txnr: &[u8],
+		f: KrpcFehler,
+	) -> Result<(), Fehler> {
+		let txt = &f.fehlermeldung;
+		log::trace!("RX ERR {quell_addr} {txt}");
+
+		let anfrage_info = self
+			.ausstehende_anfragen
+			.write()
+			.unwrap()
+			.nehmen_bytes(txnr)
+			.ok_or(Fehler::UnbekannteTransaktionsnummer)?;
+
+		if anfrage_info.bei_fehler_knoten_entfernen {
+			self
+				.routing_tabelle
+				.write()
+				.unwrap()
+				.fehlschlag(anfrage_info.knoten_id);
+		}
+
+		// Ein Fehler beim Senden bedeutet das der Empfänger
+		// nicht mehr existiert. In unserem Fall ist das nicht unbedingt ein
+		// Fehler, falls wir uns nicht für die Antwort auf eine Anfrage
+		// interessieren.
+		#[allow(unused_must_use)]
+		anfrage_info.sender.send(Anfrageergebnis::Fehler(f));
+		Ok(())
+	}
+
+	fn nachricht_deserialisieren(
+		&self,
+		nachricht_bytes: &[u8],
+	) -> Result<KrpcNachricht<A>, DeErr> {
+		KrpcNachricht::einlesen(nachricht_bytes, |txid_bytes| {
+			let txid = u16::from_be_bytes(txid_bytes.try_into().ok()?);
+			self
+				.ausstehende_anfragen
+				.read()
+				.unwrap()
+				.methode_für_txid(txid as usize)
+		})
+	}
+
 	async fn anfrage_verarbeiten(
 		&self,
-		nachricht: KrpcNachricht<A>,
 		quell_addr: A,
-	) {
-		let (req_id, anf) = match nachricht.inhalt {
-			KrpcInhalt::Anfrage { id, anf } => (id, anf),
-			_ => unreachable!(
-				"`anfrage_verarbeiten` darf nur mit einer Anfrage als `nachricht` aufgerufen werden."
-			),
-		};
+		txnr: &[u8],
+		req_id: U160,
+		anf: KrpcAnfrage,
+	) -> Result<(), Fehler> {
+		log::trace!("RX REQ {quell_addr}");
 
 		if !quell_addr.global_valide() {
-			log::debug!("Paket von ungültiger Addresse: {quell_addr}");
-			return;
+			return Err(Fehler::UngültigeAddresse(quell_addr.als_socket_addr()));
 		}
+
+		counter!("eingehende Anfragen").increment(1);
 
 		(self.bei_eingehender_nachricht)((req_id, quell_addr.clone().into()));
 
@@ -360,28 +415,18 @@ impl<A: Addr> DhtKnoten<A> {
 			}
 		};
 
-		let aw_senden_res = match aw {
+		match aw {
 			Ok(msg) => {
 				self
 					.routing_tabelle
 					.write()
 					.unwrap()
 					.anfrage_erhalten(req_id, quell_addr.clone());
-				self
-					.antwort_senden(&quell_addr, &nachricht.transaktionsnummer, msg)
-					.await
-			}
-			Err(e) => {
-				self
-					.fehler_senden(quell_addr, &nachricht.transaktionsnummer, e)
-					.await
-			}
-		};
 
-		if let Err(e) = aw_senden_res {
-			log::warn!("Fehler beim Abschicken einer Antwort auf eine Anfrage: {e}");
+				self.antwort_senden(&quell_addr, txnr, msg).await
+			}
+			Err(e) => self.fehler_senden(quell_addr, txnr, e).await,
 		}
-		counter!("eingehende Anfragen").increment(1);
 	}
 
 	fn anfrage_bearbeiten_sample_infohashes(

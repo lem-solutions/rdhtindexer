@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-
 use metrics::*;
 use smol::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use smol::{Timer, channel::*, stream::Stream};
@@ -92,29 +91,6 @@ impl<A: Addr> Scanner<A> {
 		}
 	}
 
-	/// Versucht die entsprechenden Knoten in unsere Liste einzufügen.
-	fn neue_knoten_einfügen(
-		&self,
-		knoten_v4: Option<Vec<KnotenInfo<SocketAddrV4>>>,
-		knoten_v6: Option<Vec<KnotenInfo<SocketAddrV6>>>,
-	) {
-		// TODO zu kompliziert
-		let knoten_res: Option<Vec<(U160, SocketAddr)>> = if A::IST_IPV4 {
-			knoten_v4.map(|v| v.into_iter().map(|k| (k.id, k.addr.into())).collect())
-		} else {
-			knoten_v6.map(|v| v.into_iter().map(|k| (k.id, k.addr.into())).collect())
-		};
-		let knoten = knoten_res.unwrap_or_default();
-
-		let knoten_len = knoten.len();
-		for k in knoten {
-			self.zielpuffer_push(k);
-		}
-		gauge!("Scanner Zielpuffer").set(self.knoten_rx.len() as f64);
-
-		log::trace!("neue_knoten_einfügen: anz:{knoten_len}");
-	}
-
 	async fn knoten_scannen(
 		self: Arc<Self>,
 		knoten: (U160, SocketAddr),
@@ -141,50 +117,93 @@ impl<A: Addr> Scanner<A> {
 		erg: Anfrageergebnis,
 		knoten: (U160, SocketAddr),
 	) {
-		if let Anfrageergebnis::Ok(aw) = erg {
-			let (knoten_v4, knoten_v6) = match aw {
-				KrpcAntwort::FindNode {
-					knoten_v4,
-					knoten_v6,
-				} => (knoten_v4, knoten_v6),
-				KrpcAntwort::SampleInfohashes {
-					knoten_v4,
-					knoten_v6,
-					info_hashes,
-					interval_sek,
-					anz_infohashes,
-					..
-				} => {
-					if let Some(x) = anz_infohashes {
-						histogram!("sample_infohashes anz_infohashes").record(x as f64);
-					} else {
-						counter!("smaple_infohashes anz_infohashes None").increment(1);
-					}
-					if let Some(x) = interval_sek {
-						histogram!("sample_infohashes interval_sek").record(x as f64);
-					} else {
-						counter!("smaple_infohashes interval_sek None").increment(1);
-					}
-					self
-						.info_hash_tx
-						.send(InfoHashesMitKnoten {
-							info_hashes,
-							knoten_id: knoten.0,
-							addr: knoten.1,
-						})
-						.await
-						.unwrap();
+		match erg {
+			Anfrageergebnis::Ok(KrpcAntwort::FindNode {
+				knoten_v4,
+				knoten_v6,
+			}) => self.neue_knoten_einfügen(knoten_v4, knoten_v6),
 
-					(knoten_v4, knoten_v6)
-				}
-				_ => unreachable!(
-					"Die korrekte Methode sollte durch `Anfragenpuffer` garantiert sein."
-				),
-			};
-			self.neue_knoten_einfügen(knoten_v4, knoten_v6);
-		} else {
-			log::debug!("AW {erg:?}");
+			Anfrageergebnis::Ok(KrpcAntwort::SampleInfohashes {
+				knoten_v4,
+				knoten_v6,
+				info_hashes,
+				interval_sek,
+				anz_infohashes,
+			}) => {
+				self
+					.antwort_verarbeiten_sample_infohashes(
+						knoten_v4,
+						knoten_v6,
+						info_hashes,
+						interval_sek,
+						anz_infohashes,
+						knoten,
+					)
+					.await
+			}
+
+			Anfrageergebnis::Ok(_) => unreachable!(
+				"Die korrekte Methode sollte durch `Anfragenpuffer` garantiert sein."
+			),
+
+			erg => log::debug!("AW {erg:?}"),
 		}
+	}
+
+	async fn antwort_verarbeiten_sample_infohashes(
+		self: Arc<Self>,
+		knoten_v4: Option<Vec<KnotenInfo<SocketAddrV4>>>,
+		knoten_v6: Option<Vec<KnotenInfo<SocketAddrV6>>>,
+		info_hashes: Vec<U160>,
+		interval_sek: Option<u16>,
+		anz_infohashes: Option<usize>,
+		knoten: (U160, SocketAddr),
+	) {
+		if let Some(x) = anz_infohashes {
+			histogram!("sample_infohashes anz_infohashes").record(x as f64);
+		} else {
+			counter!("smaple_infohashes anz_infohashes None").increment(1);
+		}
+		if let Some(x) = interval_sek {
+			histogram!("sample_infohashes interval_sek").record(x as f64);
+		} else {
+			counter!("smaple_infohashes interval_sek None").increment(1);
+		}
+
+		self
+			.info_hash_tx
+			.send(InfoHashesMitKnoten {
+				info_hashes,
+				knoten_id: knoten.0,
+				addr: knoten.1,
+			})
+			.await
+			.unwrap();
+
+		self.neue_knoten_einfügen(knoten_v4, knoten_v6);
+	}
+
+	/// Versucht die entsprechenden Knoten in unsere Liste einzufügen.
+	fn neue_knoten_einfügen(
+		&self,
+		knoten_v4: Option<Vec<KnotenInfo<SocketAddrV4>>>,
+		knoten_v6: Option<Vec<KnotenInfo<SocketAddrV6>>>,
+	) {
+		// TODO zu kompliziert
+		let knoten_res: Option<Vec<(U160, SocketAddr)>> = if A::IST_IPV4 {
+			knoten_v4.map(|v| v.into_iter().map(|k| (k.id, k.addr.into())).collect())
+		} else {
+			knoten_v6.map(|v| v.into_iter().map(|k| (k.id, k.addr.into())).collect())
+		};
+		let knoten = knoten_res.unwrap_or_default();
+
+		let knoten_len = knoten.len();
+		for k in knoten {
+			self.zielpuffer_push(k);
+		}
+		gauge!("Scanner Zielpuffer").set(self.knoten_rx.len() as f64);
+
+		log::trace!("neue_knoten_einfügen: anz:{knoten_len}");
 	}
 
 	async fn anfrage_senden(

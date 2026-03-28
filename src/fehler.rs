@@ -19,4 +19,16 @@ pub enum Fehler {
 
 	#[error("Wir haben versucht ein zu großes KRPC-Paket zu senden ({0})")]
 	GesendeteNachrichtZuLang(usize),
+
+	#[error("Eingehendes UDP-Paket von Port 0")]
+	PaketVonPort0,
+
+	#[error("Zu Großes eingehendes UDP-Paket")]
+	PaketZuGroß,
+
+	#[error("Unbekannte Transaktionsnummer")]
+	UnbekannteTransaktionsnummer,
+
+	#[error("Paket von nicht unterstütztem Addresstyp: {0}")]
+	UngültigeAddresse(std::net::SocketAddr),
 }
