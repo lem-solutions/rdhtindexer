@@ -5,6 +5,7 @@ Indexer/Crawler für das Bittorrent DHT-Netzwerk. Unfertig und noch nicht Einsat
 ## TODOs
 
 - [x] Nach Info-Hashes scannen
+- [ ] [BEP 42](https://bittorrent.org/beps/bep_0042.html) vollständig implementieren
 - [ ] Verfnünftige implementierung von `DhtKnoten::knoten_iterativ_suchen`
 - [ ] Runterladen der Metadaten
 - [ ] Datenbankschema und einfügen der Ergebnise in selbiges
