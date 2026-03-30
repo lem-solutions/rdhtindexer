@@ -5,11 +5,11 @@ use bendy::encoding::ToBencode;
 use metrics::*;
 use smol::Timer;
 use smol::io::Error as IoError;
-use smol::net::{SocketAddr, UdpSocket};
+use smol::net::{IpAddr, SocketAddr, UdpSocket};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
-use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use crate::Fehler;
@@ -17,11 +17,13 @@ use crate::krpc::*;
 use crate::tempomat::*;
 
 mod anfragenpuffer;
+mod bep42;
 mod peer_tabelle;
 mod routing_tabelle;
 mod token;
 pub use anfragenpuffer::Anfrageergebnis;
 use anfragenpuffer::*;
+use bep42::*;
 use peer_tabelle::PeerTabelle;
 use routing_tabelle::*;
 use token::{token_generieren, token_überprüfen};
@@ -52,6 +54,7 @@ pub struct DhtKnoten<A: Addr> {
 	routing_tabelle: RwLock<RoutingTabelle<A>>,
 	peer_tabelle: RwLock<PeerTabelle<A>>,
 	ausstehende_anfragen: RwLock<Anfragenpuffer>,
+	ext_ip_prüfer: Mutex<ExtIpPrüfer>,
 	udp: UdpSocket,
 
 	tempomat: Arc<Tempomat>,
@@ -93,6 +96,7 @@ impl<A: Addr> DhtKnoten<A> {
 				32,
 				Duration::from_mins(30),
 			)),
+			ext_ip_prüfer: Mutex::new(ExtIpPrüfer::neu()),
 			udp: UdpSocket::bind(addr).await?,
 			tempomat,
 			ausstehende_anfragen: RwLock::new(Anfragenpuffer::neu(
@@ -259,8 +263,8 @@ impl<A: Addr> DhtKnoten<A> {
 		let txnr = nachricht.transaktionsnummer.as_slice();
 
 		match nachricht.inhalt {
-			KrpcInhalt::Antwort { id, ext_ip: _, aw } => {
-				self.antwort_verarbeiten(quell_addr, txnr, id, aw)
+			KrpcInhalt::Antwort { id, ext_ip, aw } => {
+				self.antwort_verarbeiten(quell_addr, ext_ip, txnr, id, aw)
 			}
 
 			KrpcInhalt::Fehler(krpc_fehler) => {
@@ -276,12 +280,24 @@ impl<A: Addr> DhtKnoten<A> {
 	fn antwort_verarbeiten(
 		&self,
 		quell_addr: A,
+		ext_addr_opt: Option<A>,
 		txnr: &[u8],
 		aw_id: U160,
 		aw: KrpcAntwort,
 	) -> Result<(), Fehler> {
 		let methode = aw.methode();
 		log::trace!("RX AW  {methode} {quell_addr} ");
+
+		if let Some(ext_addr) = ext_addr_opt {
+			if self
+				.ext_ip_prüfer
+				.lock()
+				.unwrap()
+				.ip_wechsel_prüfen(quell_addr.ip(), ext_addr.ip())
+			{
+				self.neue_ext_ip(ext_addr.ip());
+			}
+		}
 
 		let anfrage_info = self
 			.ausstehende_anfragen
@@ -812,5 +828,28 @@ impl<A: Addr> DhtKnoten<A> {
 			.increment(len.try_into().unwrap());
 		counter!("knoten_iterativ_suchen abgeschlossen").increment(1);
 		knoten
+	}
+
+	fn neue_ext_ip(&self, ext_ip: IpAddr) {
+		if self
+			.routing_tabelle
+			.read()
+			.unwrap()
+			.eigene_id
+			.bep42_prüfen(&ext_ip)
+		{
+			return;
+		}
+
+		self
+			.routing_tabelle
+			.write()
+			.unwrap()
+			.id_ändern(U160::bep42_generieren(&ext_ip));
+
+		// Wir haben wahrscheinlich immernoch Infohashes nahe der alten Knoten-ID
+		// in der Peer-Tabelle, da diese durch neuere verdängt werden können und
+		// kein Nachteil daran besteht ferne Infohashes zu haben brauchen wir diese
+		// nicht zurück zu setzten.
 	}
 }

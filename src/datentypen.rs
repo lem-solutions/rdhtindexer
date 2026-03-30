@@ -1,12 +1,8 @@
 use crate::addr_generisch::Addr;
 use rand::random;
 use serde_derive::*;
-use smol::net::IpAddr;
 use std::fmt;
 use std::ops::BitXor;
-
-const BEP42_IPV4_MASKE: u32 = 0x030f3fff;
-const BEP42_IPV6_MASKE: u64 = 0x0103070f1f3f7fff;
 
 #[derive(Clone, PartialEq)]
 pub struct KnotenInfo<A: Addr> {
@@ -64,27 +60,6 @@ impl U160 {
 			.unwrap_or(160)
 	}
 
-	pub fn bep42_generieren(ip: &smol::net::IpAddr) -> Self {
-		let mut knoten_id: [u8; 20] = random();
-		let r: u8 = knoten_id[19] & 0x7;
-		let crc = bep42_crc(ip, r);
-
-		knoten_id[0] = (crc >> 24) as u8;
-		knoten_id[1] = (crc >> 16) as u8;
-		knoten_id[2] &= 0b00000111;
-		knoten_id[2] |= (crc >> 8) as u8 & 0b11111000;
-		U160(knoten_id)
-	}
-
-	pub fn bep42_prüfen(&self, ip: &IpAddr) -> bool {
-		let r: u8 = (self.0[19] & 0x7).into();
-		let crc = bep42_crc(ip, r);
-
-		(crc >> 24) as u8 == self.0[0]
-			&& (crc >> 16) as u8 == self.0[1]
-			&& (crc >> 8) as u8 & 0b11111000 == self.0[2] & 0b11111000
-	}
-
 	pub fn zufällig() -> Self {
 		let bytes: [u8; 20] = random();
 		U160(bytes)
@@ -120,23 +95,6 @@ impl U160 {
 	}
 }
 
-fn bep42_crc(ip: &smol::net::IpAddr, r: u8) -> u32 {
-	match ip {
-		IpAddr::V4(ipv4) => {
-			let maskierte_ip = ((ipv4.to_bits() & BEP42_IPV4_MASKE)
-				| ((r as u32) << 29))
-				.to_be_bytes();
-			crc32c::crc32c(&maskierte_ip[..])
-		}
-		IpAddr::V6(ipv6) => {
-			let maskierte_ip = (((ipv6.to_bits() >> 64) as u64 & BEP42_IPV6_MASKE)
-				| ((r as u64) << 61))
-				.to_be_bytes();
-			crc32c::crc32c(&maskierte_ip[..])
-		}
-	}
-}
-
 pub struct U160BitIter<'a> {
 	inner: &'a [u8],
 	pos_in_byte: u8,
@@ -162,14 +120,15 @@ impl<'a> Iterator for U160BitIter<'a> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use smol::net::IpAddr;
 
 	#[test]
 	fn bep42() {
 		for _ in 0..1000 {
 			let ipv4_bytes: [u8; 4] = random();
 			let ipv6_bytes: [u8; 16] = random();
-			let ipv4: IpAddr = Ipv4Addr::from(ipv4_bytes).into();
-			let ipv6: IpAddr = Ipv6Addr::from(ipv6_bytes).into();
+			let ipv4: IpAddr = smol::net::Ipv4Addr::from(ipv4_bytes).into();
+			let ipv6: IpAddr = smol::net::Ipv6Addr::from(ipv6_bytes).into();
 			assert!(U160::bep42_generieren(&ipv4).bep42_prüfen(&ipv4));
 			assert!(U160::bep42_generieren(&ipv6).bep42_prüfen(&ipv6));
 		}

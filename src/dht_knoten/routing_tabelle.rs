@@ -169,9 +169,12 @@ impl<T> RoutingTabelle<T> {
 			.filter(|k| k.status() == KnotenStatus::Gut)
 	}
 
-	pub fn knoten_extrahieren(self) -> impl Iterator<Item = KnotenInfo<T>> {
-		self
-			.buckets
+	pub fn id_ändern(&mut self, neue_id: U160) {
+		self.eigene_id = neue_id;
+
+		let mut buckets2 = vec![Bucket::default()];
+		std::mem::swap(&mut buckets2, &mut self.buckets);
+		let infos = buckets2
 			.into_iter()
 			.map(|b| b.knoten.into_iter())
 			.flatten()
@@ -179,7 +182,11 @@ impl<T> RoutingTabelle<T> {
 			.filter(|k| {
 				k.status() == KnotenStatus::Gut
 					|| k.status() == KnotenStatus::Fragwürdig
-			})
+			});
+
+		for info in infos {
+			self.knoten_info_einfügen(info);
+		}
 	}
 
 	pub fn nächster_knoten(&self, ziel: U160) -> Option<(U160, &T)> {
