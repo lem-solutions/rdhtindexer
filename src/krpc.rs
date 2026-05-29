@@ -568,6 +568,8 @@ impl KrpcAnfrage {
 	}
 }
 
+// TODO `Option<Vec<KnotenInfo<T>>>` ist nervig, entweder Datentyp vereinfachen
+//      und (De)Serialisierungscode anpassen oder hilfsfunktionen implementieren
 pub enum KrpcAntwort {
 	Ping,
 	FindNode {

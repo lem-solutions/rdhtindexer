@@ -6,6 +6,7 @@ use metrics::*;
 use smol::Timer;
 use smol::io::Error as IoError;
 use smol::net::{IpAddr, SocketAddr, UdpSocket};
+use smol::stream::{Stream, StreamExt};
 use std::marker::{Send, Sync};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -21,6 +22,7 @@ mod bep42;
 mod peer_tabelle;
 mod routing_tabelle;
 mod token;
+mod knotensuche;
 pub use anfragenpuffer::Anfrageergebnis;
 use anfragenpuffer::*;
 use bep42::*;
@@ -426,7 +428,7 @@ impl<A: Addr> DhtKnoten<A> {
 				log::debug!("Unbekannte Methode: {name_str}");
 				Err(KrpcFehler {
 					fehlercode: KrpcFehlercode::UnbekannteMethode,
-					fehlermeldung: "unbekannte Mehtode".to_owned(),
+					fehlermeldung: "unbekannte Methode".to_owned(),
 				})
 			}
 		};
@@ -713,6 +715,9 @@ impl<A: Addr> DhtKnoten<A> {
 		Ok(aw_empf)
 	}
 
+	
+	/*
+	
 	// TODO: Den *korrekten* Algorithmus implementieren.
 	// TODO: Anfällig für DoS durch überfüllung mit Fake-Knoten die
 	//       immer näher am Ziel sind.
@@ -744,6 +749,8 @@ impl<A: Addr> DhtKnoten<A> {
 		if knoten.is_empty() {
 			return knoten;
 		}
+		
+		
 
 		let mut beste_entfernung = U160([255; 20]);
 
@@ -829,6 +836,61 @@ impl<A: Addr> DhtKnoten<A> {
 		counter!("knoten_iterativ_suchen abgeschlossen").increment(1);
 		knoten
 	}
+	
+	
+	
+	// TODO falscher Ansatz: gültigkeitszeiten usw. funktionieren nicht mit den
+	//      Streams.
+	// TODO Der Datenfluss und die Datentypen sind zu unübersichtlich.
+	async fn knoten_suchschritt(
+		&self,
+		ziel: U160,
+		bekannte_knoten: impl Stream<Item=&KnotenInfo<A>>,
+		priorität: Prio,
+	) -> impl Stream<Item=KnotenInfo<A>> {
+		let anf_fn = move |&info| async {
+			let anf = KrpcAnfrage::FindNode { ziel, will: None };
+			match self.anfrage_senden(info, anf, priorität, true).await {
+				// unwrap für Oneshot rx
+				Ok(erg) => Some(erg.await.unwrap()),
+				Err(e) => { log::warn!("Fehler DhtKnoten::knoten_suchschritt (anfrage_senden): {e}"); None },
+			}
+		};
+		
+		bekannte_knoten.then(anf_fn).filter_map(|x| x).filter_map(|erg| {
+			match erg {
+				Anfrageergebnis::Ok(KrpcAntwort::FindNode { knoten_v4, knoten_v6 }) => {
+					// TODO zu kompliziert
+					let knoten_res: Option<Vec<KnotenInfo<A>>> = if A::IST_IPV4 {
+						knoten_v4.map(|v| {
+							v.into_iter()
+								.map(|k| KnotenInfo {
+									id: k.id,
+									addr: A::aus_socket_addr(k.addr.into()).unwrap(),
+								})
+								.collect()
+						})
+					} else {
+						knoten_v6.map(|v| {
+							v.into_iter()
+								.map(|k| KnotenInfo {
+									id: k.id,
+									addr: A::aus_socket_addr(k.addr.into()).unwrap(),
+								})
+								.collect()
+						})
+					};
+					if let Some(v) = knoten_res {
+						Some(smol::stream::iter(v))
+					} else {
+						None
+					}
+				}
+				_ => None,
+			}
+		}).flatten()
+	}
+	*/
 
 	fn neue_ext_ip(&self, ext_ip: IpAddr) {
 		if self
